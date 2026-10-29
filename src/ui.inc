@@ -298,14 +298,17 @@ static void DrawJoinScreen() {
 }
 
 // ================================================================ controls screen (both players)
+// Only Player 1 / Player 2 is chosen here; which controller each player uses is decided on the
+// join screen. Every action has a controller binding and a keyboard binding (two columns).
 static bool g_ctlActive = false;
-static int g_ctlRow = 0, g_ctlPlayer = 0;
+static int g_ctlRow = 0, g_ctlPlayer = 0, g_ctlCol = 0;      // col 0 = controller, 1 = keyboard
 static bool g_ctlListening = false; static DWORD g_ctlListenTick = 0; static bool g_ctlArmed = false;
 static char g_ctlReturnPkg[64]; static int g_ctlReturnArg = 1;
-static const int CTL_ROWS = NUM_BIND + 4;   // player, device, actions..., reset, done
+static const int CTL_ROWS = NUM_BIND + 3;   // player, actions..., reset, done
+static const int CTL_FIRST_ACTION = 1;
 
 static void OpenControlsScreen(const char* returnPkg, int arg) {
-    g_ctlActive = true; g_ctlRow = 0; g_ctlPlayer = 0; g_ctlListening = false;
+    g_ctlActive = true; g_ctlRow = 0; g_ctlPlayer = 0; g_ctlCol = 0; g_ctlListening = false;
     snprintf(g_ctlReturnPkg, sizeof g_ctlReturnPkg, "%s", returnPkg ? returnPkg : "Pause_Main.fng");
     g_ctlReturnArg = arg;
     PollPads(); SyncInputState();
@@ -313,39 +316,43 @@ static void OpenControlsScreen(const char* returnPkg, int arg) {
 }
 static void CloseControlsScreen() {
     g_ctlActive = false;
-    cfg.p2pad = g_dev[1];
     SaveBindings();
-    g_lastPadState[0] = g_lastPadState[1] = -1;
     QueueSwitch(g_ctlReturnPkg, g_ctlReturnArg, 0);
 }
 
-static int CapturePadInput(int dev) {
-    if (dev < 0 || !g_padConn[dev]) return 0;
-    const XINPUT_GAMEPAD& p = g_padNow[dev].Gamepad;
-    for (int c = PI_A; c <= PI_DRIGHT; c++) if (p.wButtons & kPadButtonMask[c]) return c;
-    if (p.bLeftTrigger > 150) return PI_LT;
-    if (p.bRightTrigger > 150) return PI_RT;
-    int t = 24000;
-    if (p.sThumbLX < -t) return PI_LSL; if (p.sThumbLX > t) return PI_LSR;
-    if (p.sThumbLY > t) return PI_LSU; if (p.sThumbLY < -t) return PI_LSD;
-    if (p.sThumbRX < -t) return PI_RSL; if (p.sThumbRX > t) return PI_RSR;
-    if (p.sThumbRY > t) return PI_RSU; if (p.sThumbRY < -t) return PI_RSD;
+// first input on any connected controller
+static int CapturePadInputAny() {
+    for (int dev = 0; dev < 4; dev++) {
+        if (!g_padConn[dev]) continue;
+        const XINPUT_GAMEPAD& p = g_padNow[dev].Gamepad;
+        for (int c = PI_A; c <= PI_DRIGHT; c++) if (p.wButtons & kPadButtonMask[c]) return c;
+        if (p.bLeftTrigger > 150) return PI_LT;
+        if (p.bRightTrigger > 150) return PI_RT;
+        int t = 24000;
+        if (p.sThumbLX < -t) return PI_LSL; if (p.sThumbLX > t) return PI_LSR;
+        if (p.sThumbLY > t) return PI_LSU; if (p.sThumbLY < -t) return PI_LSD;
+        if (p.sThumbRX < -t) return PI_RSL; if (p.sThumbRX > t) return PI_RSR;
+        if (p.sThumbRY > t) return PI_RSU; if (p.sThumbRY < -t) return PI_RSD;
+    }
     return 0;
 }
-static bool AnyPadInputHeld(int dev) {
-    if (dev < 0 || !g_padConn[dev]) return false;
-    const XINPUT_GAMEPAD& p = g_padNow[dev].Gamepad;
-    return p.wButtons || p.bLeftTrigger > 60 || p.bRightTrigger > 60 || abs(p.sThumbLX) > 16000 || abs(p.sThumbLY) > 16000 ||
-           abs(p.sThumbRX) > 16000 || abs(p.sThumbRY) > 16000;
+static bool AnyPadInputHeldAny() {
+    for (int dev = 0; dev < 4; dev++) {
+        if (!g_padConn[dev]) continue;
+        const XINPUT_GAMEPAD& p = g_padNow[dev].Gamepad;
+        if (p.wButtons || p.bLeftTrigger > 60 || p.bRightTrigger > 60 || abs(p.sThumbLX) > 16000 || abs(p.sThumbLY) > 16000 ||
+            abs(p.sThumbRX) > 16000 || abs(p.sThumbRY) > 16000) return true;
+    }
+    return false;
 }
 
 static void UpdateControlsScreen() {
     PollPads();
-    int pl = g_ctlPlayer, dev = g_dev[pl];
+    int pl = g_ctlPlayer;
     if (g_ctlListening) {
-        int a = g_ctlRow - 2;
+        int a = g_ctlRow - CTL_FIRST_ACTION;
         if (GetTickCount() - g_ctlListenTick < 250) { SyncInputState(); return; }
-        if (dev < 0) {
+        if (g_ctlCol == 1) {                                  // keyboard
             for (int vk = 8; vk < 256; vk++) {
                 if (vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU) continue;   // use the left/right variants
                 if (KeyPressed(vk)) {
@@ -353,9 +360,9 @@ static void UpdateControlsScreen() {
                     g_ctlListening = false; SyncInputState(); return;
                 }
             }
-        } else {
-            if (!g_ctlArmed) { if (!AnyPadInputHeld(dev)) g_ctlArmed = true; }
-            else { int c = CapturePadInput(dev); if (c) { g_padBind[pl][a] = c; g_ctlListening = false; g_ctlArmed = false; SyncInputState(); return; } }
+        } else {                                              // controller
+            if (!g_ctlArmed) { if (!AnyPadInputHeldAny()) g_ctlArmed = true; }
+            else { int c = CapturePadInputAny(); if (c) { g_padBind[pl][a] = c; g_ctlListening = false; g_ctlArmed = false; SyncInputState(); return; } }
             if (KeyPressed(VK_ESCAPE)) { g_ctlListening = false; g_ctlArmed = false; SyncInputState(); }
         }
         return;
@@ -364,65 +371,64 @@ static void UpdateControlsScreen() {
     if (m.up) g_ctlRow = (g_ctlRow + CTL_ROWS - 1) % CTL_ROWS;
     if (m.down) g_ctlRow = (g_ctlRow + 1) % CTL_ROWS;
     if (m.back) { CloseControlsScreen(); return; }
-    if (g_ctlRow == 0 && (m.left || m.right || m.accept)) { g_ctlPlayer ^= 1; return; }
-    if (g_ctlRow == 1 && (m.left || m.right || m.accept)) {
-        int d = dev + (m.left ? -1 : 1);           // -1 keyboard, 0..3 controllers
-        if (d < -1) d = 3; if (d > 3) d = -1;
-        g_dev[pl] = d; g_lastPadState[pl] = -1;
-        return;
-    }
-    if (g_ctlRow >= 2 && g_ctlRow < 2 + NUM_BIND) {
-        int a = g_ctlRow - 2;
-        if (m.clear) { if (dev < 0) g_keyBind[pl][a] = 0; else g_padBind[pl][a] = PI_NONE; }
+    if (g_ctlRow == 0) { if (m.left || m.right || m.accept) g_ctlPlayer ^= 1; return; }
+    if (g_ctlRow >= CTL_FIRST_ACTION && g_ctlRow < CTL_FIRST_ACTION + NUM_BIND) {
+        int a = g_ctlRow - CTL_FIRST_ACTION;
+        if (m.left) g_ctlCol = 0;
+        if (m.right) g_ctlCol = 1;
+        if (m.clear) { if (g_ctlCol == 1) g_keyBind[pl][a] = 0; else g_padBind[pl][a] = PI_NONE; }
         else if (m.accept) { g_ctlListening = true; g_ctlArmed = false; g_ctlListenTick = GetTickCount(); }
-    } else if (g_ctlRow == 2 + NUM_BIND && m.accept) { ResetBindings(pl); }
-    else if (g_ctlRow == 3 + NUM_BIND && m.accept) { CloseControlsScreen(); }
+    } else if (g_ctlRow == CTL_FIRST_ACTION + NUM_BIND && m.accept) { ResetBindings(pl); }
+    else if (g_ctlRow == CTL_FIRST_ACTION + NUM_BIND + 1 && m.accept) { CloseControlsScreen(); }
 }
 
 static void DrawControlsScreen() {
     float S = g_uiS, W = g_uiW, H = g_uiH;
-    float pw = 1200 * S, ph = 1000 * S, px = (W - pw) / 2, py = (H - ph) / 2;
-    int pl = g_ctlPlayer, dev = g_dev[pl];
+    float pw = 1300 * S, ph = 1000 * S, px = (W - pw) / 2, py = (H - ph) / 2;
+    int pl = g_ctlPlayer;
     UIRect(0, 0, W, H, 0xA0000000);
     UIRect(px, py, pw, ph, COL_PANEL);
     UIRect(px, py, pw, 6 * S, COL_TITLE);
     UIText(px + 50 * S, py + 24 * S, 50 * S, COL_TITLE, "SPLIT SCREEN CONTROLS");
-    char b[96], dl[32];
-    float rowH = 48 * S, y = py + 100 * S, lx = px + 50 * S, rx = px + pw - 50 * S;
+    char b[96];
+    float rowH = 48 * S, y = py + 100 * S, lx = px + 50 * S;
+    float c1 = px + 560 * S, c2 = px + 940 * S, cw = 340 * S;        // column centres
     for (int r = 0; r < CTL_ROWS; r++) {
         bool sel = r == g_ctlRow;
-        if (sel) UIRect(px + 30 * S, y - 4 * S, pw - 60 * S, rowH - 6 * S, COL_SELBG);
-        DWORD c = sel ? 0xFFFFFFFF : COL_TEXT, cv = sel ? COL_SEL : COL_TEXT;
         float ts = 30 * S;
         if (r == 0) {
-            UIText(lx, y + 4 * S, ts, c, "Player");
+            if (sel) UIRect(px + 30 * S, y - 4 * S, pw - 60 * S, rowH - 6 * S, COL_SELBG);
             snprintf(b, sizeof b, "<  PLAYER %d  >", pl + 1);
-            UIText(rx, y + 4 * S, ts, cv, b, 2);
-        } else if (r == 1) {
-            DeviceLabel(dev, dl, sizeof dl);
-            bool conn = dev < 0 || g_padConn[dev];
-            UIText(lx, y + 4 * S, ts, c, "Device");
-            snprintf(b, sizeof b, "<  %s%s  >", dl, conn ? "" : "  (not connected)");
-            UIText(rx, y + 4 * S, ts, cv, b, 2);
-            y += 14 * S;
-        } else if (r < 2 + NUM_BIND) {
-            int a = r - 2;
-            UIText(lx, y + 4 * S, ts, c, kActions[a].name);
-            const char* val;
-            if (sel && g_ctlListening) val = dev < 0 ? "Press a key..." : "Press a button...   (ESC = cancel)";
-            else if (dev < 0) val = KeyName(g_keyBind[pl][a], b, sizeof b);
-            else val = kPadNames[g_padBind[pl][a]];
-            UIText(rx, y + 4 * S, ts, cv, val, 2);
+            UIText(px + pw / 2, y + 2 * S, 34 * S, sel ? COL_SEL : COL_TITLE, b, 1);
+            y += rowH + 10 * S;
+            UIText(c1, y, 26 * S, COL_DIM, "CONTROLLER", 1);
+            UIText(c2, y, 26 * S, COL_DIM, "KEYBOARD", 1);
+            y += 40 * S;
+            continue;
+        }
+        if (r < CTL_FIRST_ACTION + NUM_BIND) {
+            int a = r - CTL_FIRST_ACTION;
+            if (sel) UIRect((g_ctlCol ? c2 : c1) - cw / 2, y - 4 * S, cw, rowH - 6 * S, COL_SELBG);
+            UIText(lx, y + 4 * S, ts, sel ? 0xFFFFFFFF : COL_TEXT, kActions[a].name);
+            for (int col = 0; col < 2; col++) {
+                const char* val;
+                bool here = sel && g_ctlCol == col;
+                if (here && g_ctlListening) val = col ? "Press a key..." : "Press a button...";
+                else if (col) val = KeyName(g_keyBind[pl][a], b, sizeof b);
+                else val = kPadNames[g_padBind[pl][a]];
+                UIText(col ? c2 : c1, y + 4 * S, ts, here ? COL_SEL : COL_TEXT, val, 1);
+            }
         } else {
-            if (r == 2 + NUM_BIND) y += 14 * S;
-            UIText(lx, y + 4 * S, ts, cv, r == 2 + NUM_BIND ? "Reset to defaults" : "Done");
+            if (r == CTL_FIRST_ACTION + NUM_BIND) y += 14 * S;
+            if (sel) UIRect(px + 30 * S, y - 4 * S, pw - 60 * S, rowH - 6 * S, COL_SELBG);
+            UIText(lx, y + 4 * S, ts, sel ? COL_SEL : COL_TEXT, r == CTL_FIRST_ACTION + NUM_BIND ? "Reset to defaults" : "Done");
         }
         y += rowH;
     }
     UIText(px + pw / 2, py + ph - 70 * S, 24 * S, COL_DIM,
-           "Up/Down select  -  Left/Right change  -  Enter / A rebind  -  Delete / X clear  -  Esc / B save and go back", 1);
+           "Up/Down select  -  Left/Right column  -  Enter / A rebind  -  Delete / X clear  -  Esc / B save and go back", 1);
     UIText(px + pw / 2, py + ph - 38 * S, 24 * S, COL_DIM,
-           "These controls are used in split screen races. The join screen picks each player's device.", 1);
+           "Each player's controller or keyboard is chosen on the join screen before car selection.", 1);
 }
 
 // ================================================================ entry point from Hook_FERender
@@ -448,8 +454,33 @@ static void DetectGamePad() {
     prevAcc = acc;
 }
 
+// "PLAYER 1/2 - CHOOSE YOUR CAR" banner on the split screen car select screens
+static bool CarSelectBannerVisible() {
+    uint8_t* db = *G::pFEDatabase;
+    bool splitFE = db && (At<uint32_t>(db, G::FEDB_GAMEMODE) & 4) && db[0] == 2;
+    return cfg.enabled && splitFE && *G::pGameFlowState == 3 && !_stricmp(g_lastPkg, "Car_Select.fng") &&
+           (g_carSelectPlayer == 0 || g_carSelectPlayer == 1);
+}
+static void DrawCarSelectBanner() {
+    float S = g_uiS, W = g_uiW;
+    int pl = g_carSelectPlayer;
+    DWORD accent = pl == 0 ? 0xFFFFB400 : 0xFF3FA9FF;
+    char b[64], dl[32];
+    snprintf(b, sizeof b, "PLAYER %d  -  CHOOSE YOUR CAR", pl + 1);
+    float tw = UITextWidth(b, 44 * S), bw = tw + 120 * S, bh = 100 * S, bx = (W - bw) / 2, by = 18 * S;
+    UIRect(bx, by, bw, bh, 0xD0101418);
+    UIRect(bx, by, bw, 5 * S, accent);
+    UIText(W / 2, by + 12 * S, 44 * S, accent, b, 1);
+    int dev = g_dev[pl];
+    if (dev == -1) snprintf(dl, sizeof dl, "Keyboard"); else snprintf(dl, sizeof dl, "Controller %d", dev + 1);
+    UIText(W / 2, by + 62 * S, 24 * S, COL_DIM, dl, 1);
+}
+
 static void UpdateAndDrawMenus() {
     DetectGamePad();
+    if (!g_joinActive && !g_ctlActive && CarSelectBannerVisible() && BuildFont()) {
+        UIBegin(); DrawCarSelectBanner(); UIEnd();
+    }
     bool any = g_joinActive || g_ctlActive;
     g_inputBlocked = any;
     if (!any) return;

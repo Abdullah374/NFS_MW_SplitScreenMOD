@@ -14,10 +14,18 @@ The console versions of Most Wanted had a split screen Quick Race mode. Most of 
 - The world loads around both players, however far apart they are
 - A separate minimap for each player; each map also shows the other player's arrow
 - A join screen before car selection: the first device to press A (or Enter) is Player 1, the second is Player 2
+- Clear "PLAYER 1 / PLAYER 2 – CHOOSE YOUR CAR" banners on the car select screens
 - Each player can use any XInput controller or the keyboard. Two players can share one keyboard.
-- Remappable controls for each player, set in-game: **pause → Options → 2P CONTROLS**. Saved per player, whichever device they join with.
-- Both players' controllers can navigate the menus
+- Remappable controls for each player, set in-game: **pause → Options → 2P CONTROLS**. Each action has a controller and a keyboard binding, saved per player, whichever device they join with.
+- Both players can navigate the menus, including the pause menu
 - Works with ThirteenAG's Widescreen Fix (1080p and other widescreen resolutions)
+
+## Quick install
+
+1. Download **NFSMW-SplitScreen-v1.8-release.zip** from [Releases](../../releases).
+2. Download **Ultimate-ASI-Loader.zip** from [Ultimate ASI Loader releases](https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases).
+3. Copy `dinput8.dll` (from the ASI Loader zip), `NFSMWSplitScreen.asi` and `NFSMWSplitScreen.ini` into your game folder (next to `speed.exe`).
+4. Start the game, then go to **Quick Race → Split Screen**. On the join screen each player presses **A** on their controller (or **Enter** on the keyboard).
 
 ## Requirements
 

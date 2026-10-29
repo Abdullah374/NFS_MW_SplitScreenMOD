@@ -232,6 +232,7 @@ typedef void (THISCALL *QPSFn)(void* fe, const char* name, int arg, uint32_t mas
 static QPSFn g_qpsTramp = nullptr;
 static void StartJoinScreen();
 static int g_carSelectPlayer = -1;
+static char g_lastPkg[64];
 static void FASTCALL Hook_QueuePackageSwitch(void* fe, void*, const char* name, int arg, uint32_t mask, int b) {
     if (name && cfg.enabled) {
         if (!_stricmp(name, "PressStart.fng")) {
@@ -249,8 +250,18 @@ static void FASTCALL Hook_QueuePackageSwitch(void* fe, void*, const char* name, 
             name = to; arg = a; mask = m;
         }
         if (!_stricmp(name, "Car_Select.fng")) g_carSelectPlayer = arg;
+        // split screen race: menus (pause, options, ...) accept every player's controller
+        if (cfg.p2MenuInput && *G::pSimUserMode == 1 && *G::pGameFlowState == 6) mask |= 7;
     }
+    if (name) snprintf(g_lastPkg, sizeof g_lastPkg, "%s", name);
     g_qpsTramp(fe, name, arg, mask, b);
+}
+// the pause menu is pushed for the controller of the player who paused; open it to both players
+typedef void (THISCALL *QPushFn)(void* fe, const char* name, int arg, uint32_t mask, int b);
+static uintptr_t o_PausePush = 0x5257F0;
+static void FASTCALL Hook_PausePush(void* fe, void*, const char* name, int arg, uint32_t mask, int b) {
+    if (cfg.p2MenuInput && *G::pSimUserMode == 1) mask |= 7;
+    ((QPushFn)o_PausePush)(fe, name, arg, mask, b);
 }
 static void InstallQPSDetour() {
     uint8_t* f = (uint8_t*)0x525940;
@@ -850,6 +861,7 @@ static void InstallLateHooks() {
     { void* f = (void*)Hook_OptionsNotify; o_OptionsNotify = *(MenuNotifyFn*)0x89E530; WriteMem(0x89E530, &f, 4); }
     InstallStringHook();
     if (cfg.p2MenuInput) { uint8_t* c = (uint8_t*)0x559627; if (c[0] == 0x83 && c[1] == 0xFD && c[2] == 0x01) { uint8_t three = 3; WriteMem(0x559629, &three, 1); } }
+    if ((o = HookCall(0x62F33E, (void*)Hook_PausePush, 0x5257F0))) o_PausePush = o;
     if ((o = HookCall(0x6F4EDA, (void*)Hook_CreatePlayers, 0x6F2700))) o_CreatePlayers = o;
     if ((o = HookCall(0x480C16, (void*)Hook_UpdateCameraMovers, 0x47C880))) o_UpdateCameraMovers = o;
     Log("Late patches installed");
@@ -926,7 +938,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID) {
         LoadConfig();
         char lp[MAX_PATH]; snprintf(lp, sizeof lp, "%s\\NFSMWSplitScreen.log", g_dir);
         if (cfg.debug) g_log = fopen(lp, "w");
-        Log("NFSMW Split Screen v1.6 loading");
+        Log("NFSMW Split Screen v1.8 loading");
         if (!CheckVersion()) { Log("Unsupported speed.exe version - mod disabled (needs v1.3)"); return TRUE; }
         LoadXInput();
         LoadBindings();
