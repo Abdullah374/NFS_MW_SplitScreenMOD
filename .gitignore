@@ -1,0 +1,14 @@
+   # Never commit game files or third-party binaries
+   *.exe
+   *.dll
+   *.asi
+   *.BUN
+   *.bun
+   *.bin
+   *.BIN
+   *.lzc
+   *.vp6
+   *.tga
+   *.log
+   NFSMWSplitScreen_Controls.ini
+   build/
