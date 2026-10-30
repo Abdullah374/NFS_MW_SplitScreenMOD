@@ -36,6 +36,8 @@ struct Config {
     uint32_t aiIconColor = 0xFF3C3C;   // minimap tint for AI racers (RGB)
     int speedTrapScore = 1;  // speed trap score on each player's HUD
     int randomGrid = 1;      // shuffle the starting grid in split screen
+    int resultsDelayMs = 4000; // split screen: time to read the race over message before the results
+    int splitReflections = 0; // separate car reflections per player (experimental, off)
 } cfg;
 
 static FILE* g_log = nullptr;
@@ -67,6 +69,8 @@ static void LoadConfig() {
     cfg.maxAI = GetPrivateProfileIntA("SplitScreen", "MaxAIRacers", 4, ini);
     cfg.speedTrapScore = GetPrivateProfileIntA("SplitScreen", "ShowSpeedTrapScore", 1, ini);
     cfg.randomGrid = GetPrivateProfileIntA("SplitScreen", "RandomStartGrid", 1, ini);
+    cfg.resultsDelayMs = GetPrivateProfileIntA("SplitScreen", "ResultsDelayMs", 4000, ini);
+    cfg.splitReflections = GetPrivateProfileIntA("SplitScreen", "SeparateReflections", 0, ini);
     { char b[32]; GetPrivateProfileStringA("SplitScreen", "AIMinimapColor", "FF3C3C", b, sizeof b, ini); cfg.aiIconColor = (uint32_t)strtoul(b, nullptr, 16) & 0xFFFFFF; }
     { char b[32]; GetPrivateProfileStringA("SplitScreen", "MinimapScale", "0.8", b, sizeof b, ini); cfg.minimapScale = (float)atof(b);
       if (cfg.minimapScale < 0.3f || cfg.minimapScale > 1.5f) cfg.minimapScale = 0.8f; }
@@ -732,6 +736,7 @@ static void FASTCALL Hook_FERender(void* fe, void*) {
     else ((FERenderFn)o_FERender)(fe);
     DrawSpeedTrapScoreRows();
     StartPositionDiagnostics();
+    PostRaceTick();
     UpdateAndDrawMenus();
 }
 
@@ -874,6 +879,18 @@ static bool SplitActive() {
     return true;
 }
 
+// Car reflections come from one environment map placed around the car of whoever view 1 follows,
+// and normally only 1-3 of its 6 faces are redrawn per frame. Split screen draws two players into
+// the same map, so before each player's pass place it around that player's car and redraw all six
+// faces (UpdateEnvironmentMapCameras with the "every face every frame" setting).
+static void RefreshEnvMapForView1() {
+    int* level = (int*)0x9017B8;                 // EnableEnvMap: 0 off, 1-3 = faces per frame setting
+    if (!cfg.splitReflections || *level <= 0) return;
+    int saved = *level;
+    *level = 3;
+    ((G::VoidFn)0x756060)();                     // UpdateEnvironmentMapCameras (uses view 1's camera + target)
+    *level = saved;
+}
 static void Hook_DisplayFrameInner() {
     g_frame++;
     HookDevice();
@@ -899,6 +916,7 @@ static void Hook_DisplayFrameInner() {
     g_captured[0] = g_captured[1] = false;
     // ---- player 1
     RecalcView1();
+    RefreshEnvMapForView1();
     g_pass = 1;
     ((G::VoidFn)o_DisplayInner)();
     G::PostDisplayFX();
@@ -908,6 +926,7 @@ static void Hook_DisplayFrameInner() {
     // ---- player 2
     SwapPlayerViews();
     RecalcView1();
+    RefreshEnvMapForView1();
     g_pass = 2;
     G::DisplayComposite(1);
     ((ViewFn)G::eView_SetupWorldLight)(G::View(1));
@@ -1034,7 +1053,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID) {
         LoadConfig();
         char lp[MAX_PATH]; snprintf(lp, sizeof lp, "%s\\NFSMWSplitScreen.log", g_dir);
         if (cfg.debug) g_log = fopen(lp, "w");
-        Log("NFSMW Split Screen v1.9 loading");
+        Log("NFSMW Split Screen v2.0 loading");
         if (!CheckVersion()) { Log("Unsupported speed.exe version - mod disabled (needs v1.3)"); return TRUE; }
         LoadXInput();
         LoadBindings();

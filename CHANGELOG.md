@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.0
+
+- Lap Knockout in split screen. Laps work like single player: the last racer each lap is knocked out and gets the game's own KNOCKED OUT screen. A knocked-out player's car stops while the other player keeps racing.
+- The game's race over message (winner text) now shows for each player before the results screen, which waits `ResultsDelayMs` (default 4000 ms).
+- The red flares at the finish line now show in split screen in every race mode.
+- All world models are drawn in split screen.
+
 ## v1.9
 
 - Race options in split screen: traffic level, 0–4 AI racers, AI difficulty and catch up. Difficulty and catch up are greyed out when there are no AI racers.

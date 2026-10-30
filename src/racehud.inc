@@ -77,3 +77,4 @@ static void InstallRaceHud() {
     o_RIUpdate = (RIUpdateFn)cur;
     void* f = (void*)Hook_RaceInfoUpdate; WriteMem(slot, &f, 4);
 }
+

@@ -102,6 +102,33 @@ static void FASTCALL Hook_SplitSetNumOpponents(void* race, void*, int n) {
     if (cfg.enabled) n = g_splitAI + 1;
     Log("Split race: NumOpponents %d (%d AI)", n, n - 1);
     ((SetIntFn)0x5DCE60)(race, n);
+    // lap knockout: one lap per eliminated racer, like single player
+    if (cfg.enabled && ((GetIntFn)0x5FAA20)(race) == 3) {
+        ((SetIntFn)0x5E9A70)(race, n);
+        Log("Split knockout: %d laps", n);
+    }
+}
+
+// ---- lap knockout in split screen
+// The race only stops AI cars when they're knocked out. A knocked out player's car is stopped
+// too and gets the game's KNOCKED OUT race over message on their HUD, while the other player races on.
+static DWORD g_knockedOut[2] = { 0, 0 };
+static void PostRaceOverMessage(void* player);
+typedef void (FASTCALL *KnockOutFn)(void* racer);
+static void FASTCALL Hook_KnockOut(uint8_t* racer) {
+    ((KnockOutFn)0x600210)(racer);
+    uint8_t* rs = *(uint8_t**)0x91E000;
+    if (!rs) return;
+    int idx = (int)((racer - (rs + 0x18)) / 0x194);
+    bool human = At<void*>(racer, 4) == nullptr;
+    Log("Knocked out: racer %d (%s)", idx, human ? (idx == 0 ? "P1" : "P2") : "AI");
+    if (!cfg.enabled || *G::pSimUserMode != 1 || !human || idx < 0 || idx > 1) return;
+    ((void(THISCALL*)(void*))0x5E9240)(racer);                  // GRacerInfo::ForceStop
+    g_knockedOut[idx] = GetTickCount() | 1;
+    // the game's own race over message on that player's HUD ("KNOCKED OUT"), as when a
+    // player finishes: EShowRaceOverMessage(IPlayer*)
+    int np; void** pl = LocalPlayers(&np);
+    if (pl && idx < np && pl[idx]) PostRaceOverMessage(pl[idx]);
 }
 
 // Game_InitRacers: AI racers are only added when Sim::GetUserMode() == 0
@@ -118,11 +145,13 @@ static uint8_t* g_initRacersArg = nullptr;    // Game_InitRacers' start info: +0
 static int g_gridSlot[16], g_gridN = 0, g_gridHumans = 0, g_gridAIPlaced = 0;
 static float g_p1StartPos[3], g_p1StartDir[3]; static bool g_p1StartValid = false;
 static float g_finalPos[16][3], g_finalDir[16][3]; static bool g_finalValid = false;
+static bool g_raceOverShown[2] = { false, false };
+static DWORD g_postRaceAt = 0; static char g_postRaceArg = 1;
 static void BuildGridRows(int rows);
 static void LogRacerPositions(const char* when);
-static int g_startLogStage = 0; static DWORD g_startLogTick = 0;
+static int g_startLogStage = 0; static DWORD g_startLogTick = 0; static int g_flareStage = 0;
 static void SetupGrid(int humans, int ai) {
-    g_gridHumans = humans; g_gridN = humans + ai; g_gridAIPlaced = 0; g_p1StartValid = false; g_finalValid = false; g_startLogStage = 1;
+    g_gridHumans = humans; g_gridN = humans + ai; g_gridAIPlaced = 0; g_p1StartValid = false; g_finalValid = false; g_startLogStage = 1; g_flareStage = 1; g_knockedOut[0] = g_knockedOut[1] = 0; g_raceOverShown[0] = g_raceOverShown[1] = false; g_postRaceAt = 0;
     if (g_gridN > 16) g_gridN = 16;
     for (int i = 0; i < g_gridN; i++) g_gridSlot[i] = i;
     if (cfg.randomGrid) {
@@ -194,7 +223,7 @@ static int FASTCALL Hook_InitRacersNumOpp(void* params) {
         Log("InitRacers (split): %d racers, NumOpponents %d -> %d, AI to add %d", rc, n, c, c + 1 - rc);
         n = c;
         SetupGrid(rc, c + 1 - rc);
-    }
+    } else g_startLogStage = 1;          // single player: diagnostics only
     return n;
 }
 
@@ -302,6 +331,8 @@ static void* FASTCALL Hook_GetOpponentChar(void* params, void*, unsigned i) {
 static uint8_t* MakeStub(int size) { return (uint8_t*)VirtualAlloc(nullptr, size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE); }
 static void EmitJmp(uint8_t* at, uint8_t op, uintptr_t to) { at[0] = op; *(int32_t*)(at + 1) = (int32_t)(to - ((uintptr_t)at + 5)); }
 static void Hook_SplitWarp();
+static void* FASTCALL Hook_RaceOverMessageCtor(void* ev, void*, void* player);
+static void Hook_ShowPostRaceScreen(char arg);
 static void InstallAIPlacement() {
     // 1) the user mode check at the top of Game_InitRacers also records the function's argument
     {
@@ -340,10 +371,18 @@ static void InstallAIPlacement() {
     PatchCall(0x6116F3, (void*)Hook_SetPlayerSavedStart, 0x5DC750);
     PatchCall(0x604EB0, (void*)Hook_SaveStartPosition, 0x600540);
     PatchCall(0x611613, (void*)Hook_SplitWarp, 0x60D820);
+    PatchCall(0x611ACD, (void*)Hook_RaceOverMessageCtor, 0x625160);
+    PatchCall(0x611F9C, (void*)Hook_ShowPostRaceScreen, 0x60AC20);
 }
 
 static void InstallRaceOptions() {
     // show NumOpponents / AISkill / CatchUp in split screen (circuit, sprint, drag, speed trap)
+    // world models (e.g. the flares at the finish line) are skipped in the split view mode unless
+    // flagged for it; draw them all
+    { uint8_t* p = (uint8_t*)0x75390B; if (p[0] == 0x84 && p[1] == 0xDB && p[2] == 0x74 && p[3] == 0x0B) { uint8_t b[4] = { 0xEB, 0x0D, 0x90, 0x90 }; WriteMem(0x75390B, b, 4); } else Log("world model patch: unexpected bytes"); }
+    // Quick Race mode list: the game leaves Lap Knockout out in split screen
+    { uint8_t* p = (uint8_t*)0x7AAB76; if (p[0] == 0x74 && p[1] == 0x3D) { uint8_t n[2] = { 0x90, 0x90 }; WriteMem(0x7AAB76, n, 2); } else Log("knockout menu patch: unexpected bytes"); }
+    PatchCall(0x61146A, (void*)Hook_KnockOut, 0x600210);
     const uintptr_t jes[] = { 0x7AC9CB, 0x7ACBAE, 0x7ACD51, 0x7AD1CE };
     for (uintptr_t a : jes) {
         uint8_t* p = (uint8_t*)a;
@@ -425,9 +464,82 @@ static void Hook_SplitWarp() {
     LogRacerPositions("after start warp + grid");
 }
 
+
+// ---- end of a split screen race
+// The game shows a player's race over message ("1ST" + time, or KNOCKED OUT) when they finish,
+// but goes to the results screen the moment the race is over, so whoever ends the race never
+// sees theirs (e.g. the knockout winner). In split screen: make sure both players got their
+// message, then open the results screen a few seconds later.
+static int PlayerIndexOf(void* player) {
+    int np; void** pl = LocalPlayers(&np);
+    for (int i = 0; pl && i < np && i < 2; i++) if (pl[i] == player) return i;
+    return -1;
+}
+static void PostRaceOverMessage(void* player) {
+    void* ev = ((void*(*)(unsigned))0x627400)(0xC);                  // Event::operator new
+    if (ev) ((void*(THISCALL*)(void*, void*))0x625160)(ev, player);   // EShowRaceOverMessage(IPlayer*)
+    int i = PlayerIndexOf(player); if (i >= 0) g_raceOverShown[i] = true;
+}
+typedef void* (THISCALL *RaceOverCtorFn)(void* ev, void* player);
+static void* FASTCALL Hook_RaceOverMessageCtor(void* ev, void*, void* player) {
+    int i = PlayerIndexOf(player); if (i >= 0) g_raceOverShown[i] = true;
+    return ((RaceOverCtorFn)0x625160)(ev, player);
+}
+static void Hook_ShowPostRaceScreen(char arg) {
+    if (!cfg.enabled || *G::pSimUserMode != 1 || cfg.resultsDelayMs <= 0) { ((void(*)(char))0x60AC20)(arg); return; }
+    int np; void** pl = LocalPlayers(&np);
+    for (int i = 0; pl && i < np && i < 2; i++) if (!g_raceOverShown[i] && pl[i]) PostRaceOverMessage(pl[i]);
+    g_postRaceAt = GetTickCount() + cfg.resultsDelayMs; g_postRaceArg = arg;
+    Log("Race over: results screen in %d ms", cfg.resultsDelayMs);
+}
+static void PostRaceTick() {
+    if (!g_postRaceAt) return;
+    if (*G::pGameFlowState != 6) { g_postRaceAt = 0; return; }       // left the race some other way
+    if ((int)(GetTickCount() - g_postRaceAt) < 0) return;
+    g_postRaceAt = 0;
+    ((void(*)(char))0x60AC20)(g_postRaceArg);
+}
+
+
+// Diagnostics: triggers that carry particle effects (e.g. the flares at the finish line)
+static void LogTriggerEffects(const char* when) {
+    if (!cfg.debug) return;
+    uint8_t* head = *(uint8_t**)0x91DFF8;
+    if (!head) { Log("Trigger effects %s: no triggers", when); return; }
+    uint8_t* t = head; int n = 0, k = 0;
+    do {
+        if (IsBadReadPtr(t, 0xD0)) break;
+        void* e0 = At<void*>(t, 0xB8); void* e1 = At<void*>(t, 0xBC);
+        if (e0 || e1) {
+            uint32_t f0 = e0 ? At<uint32_t>((uint8_t*)e0, 0x18) : 0, f1 = e1 ? At<uint32_t>((uint8_t*)e1, 0x18) : 0;
+            Log("Trigger effects %s: trig %p type %d enabled %d refs %d pos %.0f %.0f %.0f emitters %p(%s) %p(%s)", when, t,
+                At<short>(t, 0x18), At<uint8_t>(t, 0xC4), At<int>(t, 0xC8), At<float>(t, 0x58), At<float>(t, 0x5C), At<float>(t, 0x60),
+                e0, e0 ? ((f0 & 0x10) ? "on" : "off") : "-", e1, e1 ? ((f1 & 0x10) ? "on" : "off") : "-");
+            n++;
+        }
+        t = At<uint8_t*>(t, 0x24); k++;
+    } while (t && t != head && k < 2000);
+    Log("Trigger effects %s: %d of %d instances have particle effects (user mode %d)", when, n, k, *G::pSimUserMode);
+}
+
+// Finish line flares: single player recreates and enables the world particle effects
+// (trigger emitters such as the finish line flares) when the intro NIS ends. Split screen
+// skips that NIS, so the emitters stay off. Do the same refresh once the split race is on screen.
+static DWORD g_flareTick = 0;
+static void SplitFlareRefresh() {
+    if (!g_flareStage || *G::pGameFlowState != 6) return;
+    if (*G::pSimUserMode != 1) { g_flareStage = 0; return; }
+    if (g_flareStage == 1) { g_flareStage = 2; g_flareTick = GetTickCount(); return; }
+    if (GetTickCount() - g_flareTick < 300) return;
+    g_flareStage = 0;
+    ((void(__thiscall*)(void*))0x50D170)((void*)0x9166C0);   // EmitterSystem::RefreshWorldEffects
+    Log("Finish line flares: world effects refreshed for split screen");
+}
+
 // log the start positions once the race is on screen and again just after the start
 static void StartPositionDiagnostics() {
-    if (!g_startLogStage || *G::pSimUserMode != 1 || *G::pGameFlowState != 6) return;
-    if (g_startLogStage == 1) { LogRacerPositions("race on screen"); g_startLogStage = 2; g_startLogTick = GetTickCount(); }
-    else if (g_startLogStage == 2 && GetTickCount() - g_startLogTick > 6000) { LogRacerPositions("6 s later"); g_startLogStage = 0; }
+    SplitFlareRefresh();
+    if (!g_startLogStage || *G::pGameFlowState != 6) return;
+    if (g_startLogStage == 1) { LogRacerPositions("race on screen"); LogTriggerEffects("race on screen"); g_startLogStage = 2; g_startLogTick = GetTickCount(); }
+    else if (g_startLogStage == 2 && GetTickCount() - g_startLogTick > 6000) { LogRacerPositions("6 s later"); LogTriggerEffects("6 s later"); g_startLogStage = 0; }
 }
