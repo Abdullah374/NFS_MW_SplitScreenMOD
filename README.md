@@ -14,7 +14,10 @@ The console versions of Most Wanted had a split screen Quick Race mode. Most of 
 - The world loads around both players, however far apart they are
 - A separate minimap for each player; each map also shows the other player's arrow
 - A join screen before car selection: the first device to press A (or Enter) is Player 1, the second is Player 2
-- Clear "PLAYER 1 / PLAYER 2 – CHOOSE YOUR CAR" banners on the car select screens
+- **Race options** on the track options screen: traffic level, **0–4 AI racers**, AI difficulty and catch up (difficulty and catch up are greyed out with no AI)
+- AI racers are shown as red arrows on both minimaps
+- A two-wide starting grid in a random order (players included), on the road and facing the right way, also after a restart
+- Speed trap races: each player's score under COMPLETE, and each minimap only hides the speed traps that player has passed
 - Each player can use any XInput controller or the keyboard. Two players can share one keyboard.
 - Remappable controls for each player, set in-game: **pause → Options → 2P CONTROLS**. Each action has a controller and a keyboard binding, saved per player, whichever device they join with.
 - Both players can navigate the menus, including the pause menu
@@ -22,7 +25,7 @@ The console versions of Most Wanted had a split screen Quick Race mode. Most of 
 
 ## Quick install
 
-1. Download **NFSMW-SplitScreen-v1.8-release.zip** from [Releases](../../releases).
+1. Download **NFSMW-SplitScreen-v1.9-release.zip** from [Releases](../../releases).
 2. Download **Ultimate-ASI-Loader.zip** from [Ultimate ASI Loader releases](https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases).
 3. Copy `dinput8.dll` (from the ASI Loader zip), `NFSMWSplitScreen.asi` and `NFSMWSplitScreen.ini` into your game folder (next to `speed.exe`).
 4. Start the game, then go to **Quick Race → Split Screen**. On the join screen each player presses **A** on their controller (or **Enter** on the keyboard).
@@ -59,7 +62,38 @@ Defaults (change them in-game under pause → Options → 2P CONTROLS):
 | Reset car | Back | R | G |
 | Pause | Start | Esc | – |
 
-Settings are in `NFSMWSplitScreen.ini`. Each player's device and bindings are saved to `NFSMWSplitScreen_Controls.ini`.
+## Race options
+
+After picking a track in **Quick Race → Split Screen**, the race options screen has:
+
+| Option | Values |
+|---|---|
+| Traffic Level | None / Low / Medium / High |
+| AI Racers | 0–4 (remembered between sessions) |
+| AI Difficulty | Easy / Medium / Hard (greyed out with 0 AI) |
+| Catch Up | On / Off (greyed out with 0 AI) |
+
+## Settings
+
+Settings are in `NFSMWSplitScreen.ini`. Each player's device and bindings, and the last AI Racers choice, are saved to `NFSMWSplitScreen_Controls.ini`.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `Layout` | 0 | 0 = top/bottom, 1 = side by side |
+| `JoinScreen` | 1 | Show the join screen before car selection |
+| `SeparateMinimaps` | 1 | One minimap per player (0 = shared map like the console version) |
+| `MinimapScale` | 0.8 | Size of each minimap |
+| `MaxAIRacers` | 4 | Most AI racers you can pick (0–4) |
+| `AIMinimapColor` | FF3C3C | Colour of AI racers on the minimaps (hex RGB) |
+| `RandomStartGrid` | 1 | Shuffle the starting grid (0 = players in front) |
+| `ShowSpeedTrapScore` | 1 | Score row in speed trap races |
+| `ViewWidening` | 0.25 | How much wider each half view is |
+| `DividerPixels` | 2 | Line between the two views |
+| `DebugLog` | 0 | Write `NFSMWSplitScreen.log` (useful for bug reports) |
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
 
 ## Building
 
@@ -79,7 +113,9 @@ Or run `./build.sh`.
 - **Rendering:** the PC renderer draws only player 1's view. The mod draws the scene twice per frame (player 2's camera swapped into the main view for the second pass), adjusts each projection to the half-screen size, and combines both images before the HUD is drawn.
 - **Input:** the PC input system has a single game device. The mod adds input devices for both players and extends the front end to listen to more than one controller.
 - **Streaming:** world streaming is fed from player 2's camera as well.
-- **Minimaps:** the HUD is drawn in two passes. The minimap is re-centred on each player and moved into their half.
+- **Minimaps:** the HUD is drawn in two passes. The minimap is re-centred on each player and moved into their half. The split screen HUD has no AI icons, so AI racers are drawn with a tinted copy of the other-player arrow, and speed trap icons are filtered per player.
+- **AI racers:** the game only spawns AI in single player races and hides the AI options in split screen. The mod shows the options, counts player 2 as one of the opponents, and lets the race add the AI.
+- **Starting grid:** after the race script puts the two players in the two lanes at the start line, every racer is placed on a two-wide grid behind it and that becomes their restart position too.
 
 ## Credits
 

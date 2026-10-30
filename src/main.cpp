@@ -32,6 +32,10 @@ struct Config {
     float minimapScale = 0.8f;
     int stickDeadzone = 7849;
     int triggerThreshold = 30;
+    int maxAI = 4;           // most AI racers selectable in split screen
+    uint32_t aiIconColor = 0xFF3C3C;   // minimap tint for AI racers (RGB)
+    int speedTrapScore = 1;  // speed trap score on each player's HUD
+    int randomGrid = 1;      // shuffle the starting grid in split screen
 } cfg;
 
 static FILE* g_log = nullptr;
@@ -60,6 +64,10 @@ static void LoadConfig() {
     cfg.joinScreen = GetPrivateProfileIntA("SplitScreen", "JoinScreen", 1, ini);
     cfg.autoShots = GetPrivateProfileIntA("SplitScreen", "AutoScreenshots", 0, ini);
     cfg.separateMinimaps = GetPrivateProfileIntA("SplitScreen", "SeparateMinimaps", 1, ini);
+    cfg.maxAI = GetPrivateProfileIntA("SplitScreen", "MaxAIRacers", 4, ini);
+    cfg.speedTrapScore = GetPrivateProfileIntA("SplitScreen", "ShowSpeedTrapScore", 1, ini);
+    cfg.randomGrid = GetPrivateProfileIntA("SplitScreen", "RandomStartGrid", 1, ini);
+    { char b[32]; GetPrivateProfileStringA("SplitScreen", "AIMinimapColor", "FF3C3C", b, sizeof b, ini); cfg.aiIconColor = (uint32_t)strtoul(b, nullptr, 16) & 0xFFFFFF; }
     { char b[32]; GetPrivateProfileStringA("SplitScreen", "MinimapScale", "0.8", b, sizeof b, ini); cfg.minimapScale = (float)atof(b);
       if (cfg.minimapScale < 0.3f || cfg.minimapScale > 1.5f) cfg.minimapScale = 0.8f; }
     { char b[32]; GetPrivateProfileStringA("SplitScreen", "ViewWidening", "0.25", b, sizeof b, ini); cfg.widen = (float)atof(b);
@@ -481,6 +489,9 @@ static void* g_mmSet[512]; static int g_mmSetN = 0;
 static float g_mapMinX, g_mapMaxX, g_mapMinY, g_mapMaxY; static bool g_mapMeasuring = false, g_mapHave = false;
 static float g_mapCx = 74.f, g_mapCy = 240.f, g_mapR = 63.f;
 
+static void* g_onlyObj = nullptr;         // pass 3: the FE object(s) to draw
+static void* g_onlyObj2 = nullptr;
+static const PolyXform* g_aiXf = nullptr;
 static void** LocalPlayers(int* n) { *n = *(int*)0x92D884; return *(void***)0x92D87C; }
 
 static void AddToSet(void* o, int depth) {
@@ -541,6 +552,14 @@ typedef void (THISCALL *GIRenderObjFn)(void* gi, void* obj);
 static GIRenderObjFn o_GIRenderObject = (GIRenderObjFn)0x516630;
 static void FASTCALL Hook_GIRenderObject(void* gi, void*, void* obj) {
     if (g_feMode == 0) { o_GIRenderObject(gi, obj); return; }
+    if (g_feMode == 3) {                                      // AI racer icon pass: one object only
+        if (obj != g_onlyObj && obj != g_onlyObj2) return;
+        g_xf = g_aiXf;
+        At<uint32_t>((uint8_t*)obj, 0x1C) |= At<int>((uint8_t*)obj, 0x18) == 2 ? 0x400000 : 0x2000000;   // strings: text dirty, images: rebuild
+        o_GIRenderObject(gi, obj);
+        g_xf = nullptr;
+        return;
+    }
     bool in = InSet(obj);
     if (g_feMode == 2 && !in) return;                         // pass B: minimap only
     if (in) {
@@ -555,7 +574,37 @@ static void FASTCALL Hook_GIRenderObject(void* gi, void*, void* obj) {
 }
 
 typedef void (THISCALL *MMUpdateFn)(void* mm, void* player);
-static MMUpdateFn o_MMUpdate = (MMUpdateFn)0x59DB50;
+static MMUpdateFn o_MMUpdateRaw = (MMUpdateFn)0x59DB50;
+
+// Speed trap races: when anyone drives through a trap, the game drops its icon from the list of
+// visible map icons (GManager +0x2C0 count / +0x2C4 GIcon*[]) for everybody. The minimap gets its
+// icons from GManager::GatherVisibleIcons(out, player), so per player we take that list, drop the
+// traps this player has crossed and add back the ones he hasn't (GRacerInfo +0x78: speed recorded
+// at each race trap; GRaceStatus +0x4504 trap count, +0x4508 GTrigger*[16]; GTrigger +0xC0 GIcon*).
+typedef int (THISCALL *GatherFn)(void* gm, void** out, void* player);
+static int FASTCALL Hook_GatherVisibleIcons(void* gm, void*, void** out, void* player) {
+    int n = ((GatherFn)0x5E4940)(gm, out, player);
+    if (!cfg.enabled || *G::pSimUserMode != 1 || !player) return n;
+    uint8_t* rs = *(uint8_t**)0x91E000;
+    if (!rs || !At<void*>(rs, 0x1968)) return n;
+    if (((int(THISCALL*)(void*))0x5FAA20)(At<void*>(rs, 0x1968)) != 5) return n;    // speed trap race
+    int traps = At<int>(rs, 0x4504);
+    if (traps <= 0 || traps > 16) return n;
+    void* sim = ((void*(THISCALL*)(void*))(*(void***)player)[1])(player);
+    uint8_t* info = sim ? (uint8_t*)((void*(THISCALL*)(void*, void*))0x5E8B20)(rs, sim) : nullptr;
+    if (!info) return n;
+    for (int i = 0; i < traps; i++) {
+        uint8_t* trig = At<uint8_t*>(rs, 0x4508 + i * 4);
+        void* icon = trig ? At<void*>(trig, 0xC0) : nullptr;
+        if (!icon) continue;
+        bool crossed = At<float>(info, 0x78 + i * 4) > 0.f;
+        int at = -1; for (int k = 0; k < n; k++) if (out[k] == icon) { at = k; break; }
+        if (crossed && at >= 0) { for (int k = at; k < n - 1; k++) out[k] = out[k + 1]; n--; }
+        else if (!crossed && at < 0 && n < 190) out[n++] = icon;
+    }
+    return n;
+}
+static void o_MMUpdate(void* mm, void* player) { o_MMUpdateRaw(mm, player); }
 static void FASTCALL Hook_MinimapUpdate(void* mm, void*, void* player) {
     o_MMUpdate(mm, player);
     if (g_inOurMMUpdate) return;
@@ -608,6 +657,36 @@ static void SetupMinimapXforms() {
     }
 }
 
+// The split screen HUD has no AI racer icons (the console mode had no AI), so draw each AI racer
+// by borrowing the "other player" icon: place it with Minimap::UpdateElementArt, tint it and
+// render just that object, once per AI racer, on each player's map.
+static void DrawAIRacerIcons(const PolyXform* xf) {
+    uint8_t* obj = At<uint8_t*>(g_mm, 0x94);
+    if (!obj) return;
+    uint8_t** list = *(uint8_t***)0x92CE3C;                 // vehicle list 3 (AI racers)
+    int cnt = *(int*)0x92CE44;
+    if (!list || cnt <= 0 || cnt > 16) return;
+    uint32_t col = ((uint32_t(*)(void*))0x51A180)(obj);      // FEngGetColor
+    void* engine = *(void**)*(void**)0x91CADC;
+    for (int i = 0; i < cnt; i++) {
+        uint8_t* v = list[i];
+        if (!v) continue;
+        void** vt = *(void***)v;
+        if (!((bool(THISCALL*)(void*))vt[0x88 / 4])(v)) continue;            // IVehicle::IsActive
+        void* sim = ((void*(THISCALL*)(void*))vt[1])(v);                       // IVehicle -> ISimable
+        if (!sim) continue;
+        float pos[2], dir[2];
+        ((void(*)(float*, float*, void*))0x579840)(pos, dir, sim);            // GetVehicleVectors
+        ((void(*)(void*, uint32_t))0x5157E0)(obj, (col & 0xFF000000u) | cfg.aiIconColor);
+        ((void(THISCALL*)(void*, float*, float*, void*, bool))0x5675D0)(g_mm, pos, dir, obj, false);
+        if (!((bool(*)(void*))0x564AD0)(obj)) continue;                        // FEngIsVisible
+        g_onlyObj = obj; g_aiXf = xf; g_feMode = 3;
+        ((void(THISCALL*)(void*))0x5BE800)(engine);
+        g_feMode = 0; g_onlyObj = nullptr;
+    }
+    ((void(*)(void*, uint32_t))0x5157E0)(obj, col);
+}
+
 static void RenderFEWithTwoMinimaps(void* fe) {
     int n; void** pl = LocalPlayers(&n);
     void* p1 = pl[0]; void* p2 = pl[n - 1];
@@ -619,6 +698,7 @@ static void RenderFEWithTwoMinimaps(void* fe) {
     g_feMode = 1;
     ((FERenderFn)o_FERender)(fe);
     g_mapHave = g_mapMaxX > g_mapMinX;
+    DrawAIRacerIcons(&g_xfP1);
     // pass B: minimap only, centred on player 2
     g_inOurMMUpdate = true;
     pl[0] = p2; pl[n - 1] = p1;          // UpdatePlayer2Element marks IPlayer::Last -> show player 1
@@ -628,11 +708,14 @@ static void RenderFEWithTwoMinimaps(void* fe) {
     void* engine = *(void**)*(void**)0x91CADC;      // cFEng::mInstance->FEngine
     ((void(THISCALL*)(void*))0x5BE800)(engine);
     g_feMode = 0;
+    DrawAIRacerIcons(&g_xfP2);
     o_MMUpdate(g_mm, p1);                          // leave player 1's state for the game
     g_inOurMMUpdate = false;
 }
 
 #include "ui.inc"
+#include "raceopts.inc"
+#include "racehud.inc"
 
 static void FASTCALL Hook_FERender(void* fe, void*) {
     if (g_pass == 1) {                              // hide FE in P1 pass, keep the 3D image
@@ -647,6 +730,8 @@ static void FASTCALL Hook_FERender(void* fe, void*) {
     g_pass = 0;
     if (MinimapReady()) RenderFEWithTwoMinimaps(fe);     // every split-screen frame, even if the 3D pass was skipped
     else ((FERenderFn)o_FERender)(fe);
+    DrawSpeedTrapScoreRows();
+    StartPositionDiagnostics();
     UpdateAndDrawMenus();
 }
 
@@ -689,12 +774,17 @@ static void InstallStringHook() {
     uint8_t* f = (uint8_t*)0x56BB80;
     const uint8_t expect[7] = { 0x53, 0x8B, 0x1D, 0x80, 0xCF, 0x91, 0x00 };
     if (memcmp(f, expect, 7)) { Log("SearchForString: unexpected prologue - option label disabled"); return; }
-    uint8_t* t = (uint8_t*)VirtualAlloc(nullptr, 64, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    struct { uint32_t hash; const char* str; } tbl[] = {
+        { STR_P2CONTROLS, g_strP2Controls }, { STR_AIRACERS, g_strAIRacers }, { STR_AIDIFF, g_strAIDiff }, { STR_SCORE, g_strScore },
+    };
+    uint8_t* t = (uint8_t*)VirtualAlloc(nullptr, 128, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     int n = 0;
-    t[n++] = 0x81; t[n++] = 0xFA; *(uint32_t*)(t + n) = STR_P2CONTROLS; n += 4;      // cmp edx, hash
-    t[n++] = 0x75; t[n++] = 0x06;                                                     // jne +6
-    t[n++] = 0xB8; *(uint32_t*)(t + n) = (uint32_t)(uintptr_t)g_strP2Controls; n += 4; // mov eax, str
-    t[n++] = 0xC3;                                                                    // ret
+    for (auto& e : tbl) {
+        t[n++] = 0x81; t[n++] = 0xFA; *(uint32_t*)(t + n) = e.hash; n += 4;              // cmp edx, hash
+        t[n++] = 0x75; t[n++] = 0x06;                                                     // jne +6
+        t[n++] = 0xB8; *(uint32_t*)(t + n) = (uint32_t)(uintptr_t)e.str; n += 4;          // mov eax, str
+        t[n++] = 0xC3;                                                                    // ret
+    }
     memcpy(t + n, expect, 7); n += 7;                                                 // original instructions
     t[n++] = 0xE9; *(int32_t*)(t + n) = (int32_t)(0x56BB87 - ((uintptr_t)t + n + 4)); n += 4;
     uint8_t j[7] = { 0xE9, 0, 0, 0, 0, 0x90, 0x90 };
@@ -851,15 +941,21 @@ static void InstallLateHooks() {
         HookCall(0x6BE70F, (void*)Hook_PolyRender3, 0x6D1260);
         HookCall(0x6BE734, (void*)Hook_PolyRender4, 0x6D1930);
         HookCall(0x579A8F, (void*)Hook_UncompressMaps, 0x5672F0);
+        HookCall(0x57A33F, (void*)Hook_GatherVisibleIcons, 0x5E4940);
+        void* f;
+        o_MMUpdateRaw = *(MMUpdateFn*)0x8A2044; f = (void*)Hook_MinimapUpdate; WriteMem(0x8A2044, &f, 4);
+    }
+    {   // FE object render filter (minimap passes, speed trap score row)
         void* f;
         if (*(uintptr_t*)0x89B46C == 0x516630) { f = (void*)Hook_GIRenderObject; WriteMem(0x89B46C, &f, 4); }
         else { o_GIRenderObject = *(GIRenderObjFn*)0x89B46C; f = (void*)Hook_GIRenderObject; WriteMem(0x89B46C, &f, 4); Log("GI RenderObject already hooked, chaining"); }
-        o_MMUpdate = *(MMUpdateFn*)0x8A2044; f = (void*)Hook_MinimapUpdate; WriteMem(0x8A2044, &f, 4);
     }
     HookCall(0x52909C, (void*)Hook_OptionsAddOption, G::IconScrollerMenu_AddOption);
     HookCall(0x56431B, (void*)Hook_HandleJoy, 0x559400);
     { void* f = (void*)Hook_OptionsNotify; o_OptionsNotify = *(MenuNotifyFn*)0x89E530; WriteMem(0x89E530, &f, 4); }
     InstallStringHook();
+    InstallRaceOptions();
+    InstallRaceHud();
     if (cfg.p2MenuInput) { uint8_t* c = (uint8_t*)0x559627; if (c[0] == 0x83 && c[1] == 0xFD && c[2] == 0x01) { uint8_t three = 3; WriteMem(0x559629, &three, 1); } }
     if ((o = HookCall(0x62F33E, (void*)Hook_PausePush, 0x5257F0))) o_PausePush = o;
     if ((o = HookCall(0x6F4EDA, (void*)Hook_CreatePlayers, 0x6F2700))) o_CreatePlayers = o;
@@ -938,7 +1034,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID) {
         LoadConfig();
         char lp[MAX_PATH]; snprintf(lp, sizeof lp, "%s\\NFSMWSplitScreen.log", g_dir);
         if (cfg.debug) g_log = fopen(lp, "w");
-        Log("NFSMW Split Screen v1.8 loading");
+        Log("NFSMW Split Screen v1.9 loading");
         if (!CheckVersion()) { Log("Unsupported speed.exe version - mod disabled (needs v1.3)"); return TRUE; }
         LoadXInput();
         LoadBindings();

@@ -478,9 +478,7 @@ static void DrawCarSelectBanner() {
 
 static void UpdateAndDrawMenus() {
     DetectGamePad();
-    if (!g_joinActive && !g_ctlActive && CarSelectBannerVisible() && BuildFont()) {
-        UIBegin(); DrawCarSelectBanner(); UIEnd();
-    }
+    // (the PLAYER 1 / PLAYER 2 car select banner was removed: the car select screen already says whose turn it is)
     bool any = g_joinActive || g_ctlActive;
     g_inputBlocked = any;
     if (!any) return;
