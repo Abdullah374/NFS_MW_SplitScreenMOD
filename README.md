@@ -18,6 +18,7 @@ The console versions of Most Wanted had a split screen Quick Race mode. Most of 
 - AI racers are shown as red arrows on both minimaps
 - A two-wide starting grid in a random order (players included), on the road and facing the right way, also after a restart
 - Speed trap races: each player's score under COMPLETE, and each minimap only hides the speed traps that player has passed
+- **Player 2 can use your career and My Cars cars**, with their paint, body kits and performance parts
 - **Lap Knockout** in split screen: the last racer each lap is knocked out, like in single player, with the game's own KNOCKED OUT screen
 - The game's race over message (winner text) is shown before the results screen
 - The red flares at the finish line show in split screen
@@ -28,7 +29,7 @@ The console versions of Most Wanted had a split screen Quick Race mode. Most of 
 
 ## Quick install
 
-1. Download **NFSMW-SplitScreen-v2.0-release.zip** from [Releases](../../releases).
+1. Download **NFSMW-SplitScreen-v2.1-release.zip** from [Releases](../../releases).
 2. Download **Ultimate-ASI-Loader.zip** from [Ultimate ASI Loader releases](https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases).
 3. Copy `dinput8.dll` (from the ASI Loader zip), `NFSMWSplitScreen.asi` and `NFSMWSplitScreen.ini` into your game folder (next to `speed.exe`).
 4. Start the game, then go to **Quick Race → Split Screen**. On the join screen each player presses **A** on their controller (or **Enter** on the keyboard).
@@ -86,6 +87,7 @@ Settings are in `NFSMWSplitScreen.ini`. Each player's device and bindings, and t
 | `JoinScreen` | 1 | Show the join screen before car selection |
 | `SeparateMinimaps` | 1 | One minimap per player (0 = shared map like the console version) |
 | `MinimapScale` | 0.8 | Size of each minimap |
+| `Player2UsesPlayer1Cars` | 1 | Player 2 can pick player 1's career and My Cars cars (0 = stock cars only) |
 | `MaxAIRacers` | 4 | Most AI racers you can pick (0–4) |
 | `AIMinimapColor` | FF3C3C | Colour of AI racers on the minimaps (hex RGB) |
 | `RandomStartGrid` | 1 | Shuffle the starting grid (0 = players in front) |
@@ -119,6 +121,7 @@ Or run `./build.sh`.
 - **Streaming:** world streaming is fed from player 2's camera as well.
 - **Minimaps:** the HUD is drawn in two passes. The minimap is re-centred on each player and moved into their half. The split screen HUD has no AI icons, so AI racers are drawn with a tinted copy of the other-player arrow, and speed trap icons are filtered per player.
 - **AI racers:** the game only spawns AI in single player races and hides the AI options in split screen. The mod shows the options, counts player 2 as one of the opponents, and lets the race add the AI.
+- **Player 2's cars:** the game creates a temporary profile for player 2 when their car select opens, with only the stock cars. The mod copies player 1's car stable into it, so the career and My Cars lists match player 1's.
 - **Lap Knockout:** the menu entry is unlocked in split screen. A knocked-out player's car is stopped and they get the game's own KNOCKED OUT message while the other player races on.
 - **End of race:** the game only shows the race over message for player 1, then opens the results straight away. The mod posts it for whichever player finished and holds the results back for a few seconds.
 - **Finish line flares:** single player switches on world particle effects when the intro camera ends. Split screen has no intro, so the mod does that refresh when the race appears.

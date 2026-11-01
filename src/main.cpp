@@ -28,6 +28,7 @@ struct Config {
     int separateMinimaps = 1;
     int autoShots = 0;
     int joinScreen = 1;
+    int p2CareerCars = 1;
     int p2MenuInput = 1;
     float minimapScale = 0.8f;
     int stickDeadzone = 7849;
@@ -64,6 +65,7 @@ static void LoadConfig() {
     cfg.motionBlur = GetPrivateProfileIntA("SplitScreen", "MotionBlur", 0, ini);
     cfg.p2MenuInput = GetPrivateProfileIntA("SplitScreen", "Player2MenuControl", 1, ini);
     cfg.joinScreen = GetPrivateProfileIntA("SplitScreen", "JoinScreen", 1, ini);
+    cfg.p2CareerCars = GetPrivateProfileIntA("SplitScreen", "Player2UsesPlayer1Cars", 1, ini);
     cfg.autoShots = GetPrivateProfileIntA("SplitScreen", "AutoScreenshots", 0, ini);
     cfg.separateMinimaps = GetPrivateProfileIntA("SplitScreen", "SeparateMinimaps", 1, ini);
     cfg.maxAI = GetPrivateProfileIntA("SplitScreen", "MaxAIRacers", 4, ini);
@@ -245,6 +247,27 @@ static QPSFn g_qpsTramp = nullptr;
 static void StartJoinScreen();
 static int g_carSelectPlayer = -1;
 static char g_lastPkg[64];
+// Player 2's car select creates a fresh multiplayer profile for player 2 (CreateMultiplayerProfile,
+// called from the UIQRCarSelect constructor) with only the stock cars, so there are no career or
+// My Cars entries. Right after it is created, give player 2 a copy of player 1's car stable
+// (FEPlayerCarDB, profile + 0x414, 0x8CC8 bytes: car records, customizations, career records).
+static void CopyCarStableToP2() {
+    uint8_t* db = *G::pFEDatabase;
+    if (!db) { Log("Player 2 car stable: no FE database"); return; }
+    uint8_t* p0 = At<uint8_t*>(db, 0x10); uint8_t* p1 = At<uint8_t*>(db, 0x14);
+    if (!p0 || !p1 || p0 == p1) { Log("Player 2 car stable: profiles %p %p, not copied", p0, p1); return; }
+    int n0 = 0, n1 = 0;
+    for (int i = 0; i < 200; i++) { if (At<uint32_t>(p0, 0x414 + i * 0x14) != 0xFFFFFFFF) n0++; if (At<uint32_t>(p1, 0x414 + i * 0x14) != 0xFFFFFFFF) n1++; }
+    DWORD old;
+    VirtualProtect(p1 + 0x414, 0x8CC8, PAGE_READWRITE, &old);   // no-op on normal heap memory
+    memcpy(p1 + 0x414, p0 + 0x414, 0x8CC8);
+    Log("Player 2 car stable: copied from player 1 (profiles %p %p, cars %d -> was %d)", p0, p1, n0, n1);
+}
+static uintptr_t o_CreateMPProfile = 0x5ABA50;
+static void FASTCALL Hook_CreateMPProfile(void* db, void*, int idx) {
+    ((void(THISCALL*)(void*, int))o_CreateMPProfile)(db, idx);
+    if (idx == 1 && cfg.p2CareerCars) CopyCarStableToP2();
+}
 static void FASTCALL Hook_QueuePackageSwitch(void* fe, void*, const char* name, int arg, uint32_t mask, int b) {
     if (name && cfg.enabled) {
         if (!_stricmp(name, "PressStart.fng")) {
@@ -979,6 +1002,7 @@ static void InstallLateHooks() {
     if ((o = HookCall(0x62F33E, (void*)Hook_PausePush, 0x5257F0))) o_PausePush = o;
     if ((o = HookCall(0x6F4EDA, (void*)Hook_CreatePlayers, 0x6F2700))) o_CreatePlayers = o;
     if ((o = HookCall(0x480C16, (void*)Hook_UpdateCameraMovers, 0x47C880))) o_UpdateCameraMovers = o;
+    if ((o = HookCall(0x7C2DC5, (void*)Hook_CreateMPProfile, 0x5ABA50))) o_CreateMPProfile = o;   // player 2 car stable
     Log("Late patches installed");
 }
 
@@ -1053,7 +1077,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID) {
         LoadConfig();
         char lp[MAX_PATH]; snprintf(lp, sizeof lp, "%s\\NFSMWSplitScreen.log", g_dir);
         if (cfg.debug) g_log = fopen(lp, "w");
-        Log("NFSMW Split Screen v2.0 loading");
+        Log("NFSMW Split Screen v2.1 loading");
         if (!CheckVersion()) { Log("Unsupported speed.exe version - mod disabled (needs v1.3)"); return TRUE; }
         LoadXInput();
         LoadBindings();

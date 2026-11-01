@@ -1,5 +1,9 @@
 # Changelog
 
+## v2.1
+
+- Player 2 can now pick from player 1's career cars and My Cars in split screen car select, with their paint, body kits and performance parts. Turn it off with `Player2UsesPlayer1Cars=0`. Your save is not changed.
+
 ## v2.0
 
 - Lap Knockout in split screen. Laps work like single player: the last racer each lap is knocked out and gets the game's own KNOCKED OUT screen. A knocked-out player's car stops while the other player keeps racing.
