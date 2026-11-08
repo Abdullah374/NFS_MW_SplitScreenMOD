@@ -21,27 +21,31 @@ static const WORD kPadButtonMask[PI_DRIGHT + 1] = {
     XINPUT_GAMEPAD_LEFT_THUMB, XINPUT_GAMEPAD_RIGHT_THUMB,
     XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_LEFT, XINPUT_GAMEPAD_DPAD_RIGHT };
 
-struct BindAction { const char* name; const char* id; int channel; int defPad; int defKey[2]; bool steer; };
+struct BindAction { const char* name; const char* id; int channel; int defPad; int defKey[4]; bool steer; };
 static const BindAction kActions[] = {
-    // name               id              ch  pad        P1 key        P2 key
-    { "Accelerate",      "Gas",          0,  PI_RT,    { VK_UP,      'W' },    false },
-    { "Brake / Reverse", "Brake",        1,  PI_LT,    { VK_DOWN,    'S' },    false },
-    { "Steer Left",      "SteerLeft",    2,  PI_LSL,   { VK_LEFT,    'A' },    true  },
-    { "Steer Right",     "SteerRight",   3,  PI_LSR,   { VK_RIGHT,   'D' },    true  },
-    { "Handbrake",       "Handbrake",    4,  PI_A,     { VK_SPACE,   'F' },    false },
-    { "Nitrous",         "Nitrous",      6,  PI_B,     { VK_LMENU,   'Q' },    false },
-    { "Speedbreaker",    "Speedbreaker", 5,  PI_X,     { VK_RCONTROL,'E' },    false },
-    { "Shift Up",        "ShiftUp",      8,  PI_RB,    { VK_LSHIFT,  'X' },    false },
-    { "Shift Down",      "ShiftDown",    7,  PI_LB,    { VK_LCONTROL,'Z' },    false },
-    { "Change Camera",   "Camera",       15, PI_Y,     { 'C',        'V' },    false },
-    { "Look Back",       "LookBack",     16, PI_RS,    { 'L',        VK_TAB }, false },
-    { "Reset Car",       "Reset",        9,  PI_BACK,  { 'R',        'G' },    false },
-    { "Pause",           "Pause",        18, PI_START, { VK_ESCAPE,  0 },      false },
+    // name               id              ch  pad        P1 key        P2 key    P3 key   P4 key (numpad)
+    { "Accelerate",      "Gas",          0,  PI_RT,    { VK_UP,      'W',      'I',     VK_NUMPAD8 },  false },
+    { "Brake / Reverse", "Brake",        1,  PI_LT,    { VK_DOWN,    'S',      'K',     VK_NUMPAD5 },  false },
+    { "Steer Left",      "SteerLeft",    2,  PI_LSL,   { VK_LEFT,    'A',      'J',     VK_NUMPAD4 },  true  },
+    { "Steer Right",     "SteerRight",   3,  PI_LSR,   { VK_RIGHT,   'D',      'L',     VK_NUMPAD6 },  true  },
+    { "Handbrake",       "Handbrake",    4,  PI_A,     { VK_SPACE,   'F',      'H',     VK_NUMPAD0 },  false },
+    { "Nitrous",         "Nitrous",      6,  PI_B,     { VK_LMENU,   'Q',      'U',     VK_NUMPAD7 },  false },
+    { "Speedbreaker",    "Speedbreaker", 5,  PI_X,     { VK_RCONTROL,'E',      'O',     VK_NUMPAD9 },  false },
+    { "Shift Up",        "ShiftUp",      8,  PI_RB,    { VK_LSHIFT,  'X',      'P',     VK_ADD },      false },
+    { "Shift Down",      "ShiftDown",    7,  PI_LB,    { VK_LCONTROL,'Z',      'Y',     VK_SUBTRACT }, false },
+    { "Change Camera",   "Camera",       15, PI_Y,     { 'C',        'V',      'N',     VK_DIVIDE },   false },
+    { "Look Back",       "LookBack",     16, PI_RS,    { 'L',        VK_TAB,   'M',     VK_MULTIPLY }, false },
+    { "Reset Car",       "Reset",        9,  PI_BACK,  { 'R',        'G',      'B',     VK_DECIMAL },  false },
+    { "Pause",           "Pause",        18, PI_START, { VK_ESCAPE,  0,        0,       0 },           false },
 };
 static const int NUM_BIND = sizeof(kActions) / sizeof(kActions[0]);
-static int g_padBind[2][NUM_BIND];
-static int g_keyBind[2][NUM_BIND];
-static int g_dev[2] = { -1, 1 };          // per player: -1 keyboard, 0..3 XInput controller
+static const int MAX_PLAYERS = 4;
+static int g_padBind[MAX_PLAYERS][NUM_BIND];
+static int g_keyBind[MAX_PLAYERS][NUM_BIND];
+static int g_dev[MAX_PLAYERS] = { -1, 1, 2, 3 };   // per player: -1 keyboard, 0..3 XInput controller
+// keyboard key sets (arrows, WASD, IJKL, numpad by default): keyboard players get them in the
+// order they joined, so the first keyboard player always has the arrows, the next WASD, ...
+static int g_kbSet[MAX_PLAYERS] = { 0, 1, 2, 3 };
 static int g_gamePad = -1;                // XInput pad that the game's own input (port 0) also reads
 
 static float PadValue(const XINPUT_GAMEPAD& p, int code) {
@@ -88,19 +92,24 @@ static const char* KeyName(int vk, char* buf, int n) {
 }
 
 static void ResetBindings(int pl) {
-    for (int i = 0; i < NUM_BIND; i++) { g_padBind[pl][i] = kActions[i].defPad; g_keyBind[pl][i] = kActions[i].defKey[pl]; }
+    int ks = g_kbSet[pl];
+    for (int i = 0; i < NUM_BIND; i++) { g_padBind[pl][i] = kActions[i].defPad; g_keyBind[ks][i] = kActions[i].defKey[ks]; }
 }
 
-static const char* const kSecDev[2]  = { "Player1", "Player2" };
-static const char* const kSecPad[2]  = { "Player1Controller", "Player2Controller" };
-static const char* const kSecKey[2]  = { "Player1Keyboard", "Player2Keyboard" };
+static const char* const kSecDev[MAX_PLAYERS]  = { "Player1", "Player2", "Player3", "Player4" };
+static const char* const kSecPad[MAX_PLAYERS]  = { "Player1Controller", "Player2Controller", "Player3Controller", "Player4Controller" };
+static const char* const kSecKey[MAX_PLAYERS]  = { "Player1Keyboard", "Player2Keyboard", "Player3Keyboard", "Player4Keyboard" };
+static const int kDefDev[MAX_PLAYERS] = { -1, 1, 2, 3 };
 
 static void LoadBindings() {
     char b[64];
-    for (int pl = 0; pl < 2; pl++) {
+    for (int pl = 0; pl < MAX_PLAYERS; pl++) {
+        g_kbSet[pl] = pl;
         ResetBindings(pl);
-        g_dev[pl] = GetPrivateProfileIntA(kSecDev[pl], "Device", pl == 0 ? -1 : cfg.p2pad, g_ctlIni);
-        if (g_dev[pl] < -1 || g_dev[pl] > 3) g_dev[pl] = pl == 0 ? -1 : 1;
+        g_dev[pl] = GetPrivateProfileIntA(kSecDev[pl], "Device", pl == 1 ? cfg.p2pad : kDefDev[pl], g_ctlIni);
+        if (g_dev[pl] < -1 || g_dev[pl] > 3) g_dev[pl] = kDefDev[pl];
+        g_kbSet[pl] = GetPrivateProfileIntA(kSecDev[pl], "KeySet", pl + 1, g_ctlIni) - 1;
+        if (g_kbSet[pl] < 0 || g_kbSet[pl] >= MAX_PLAYERS) g_kbSet[pl] = pl;
         for (int i = 0; i < NUM_BIND; i++) {
             GetPrivateProfileStringA(kSecPad[pl], kActions[i].id, "", b, sizeof b, g_ctlIni);
             if (b[0]) { for (int c = 0; c < PI_COUNT; c++) if (!_stricmp(b, kPadIds[c])) { g_padBind[pl][i] = c; break; } }
@@ -113,9 +122,11 @@ static void LoadBindings() {
 }
 static void SaveBindings() {
     char b[32];
-    for (int pl = 0; pl < 2; pl++) {
+    for (int pl = 0; pl < MAX_PLAYERS; pl++) {
         snprintf(b, sizeof b, "%d", g_dev[pl]);
         WritePrivateProfileStringA(kSecDev[pl], "Device", b, g_ctlIni);
+        snprintf(b, sizeof b, "%d", g_kbSet[pl] + 1);
+        WritePrivateProfileStringA(kSecDev[pl], "KeySet", b, g_ctlIni);
         for (int i = 0; i < NUM_BIND; i++) {
             WritePrivateProfileStringA(kSecPad[pl], kActions[i].id, kPadIds[g_padBind[pl][i]], g_ctlIni);
             snprintf(b, sizeof b, "0x%02X", g_keyBind[pl][i]);
@@ -126,9 +137,9 @@ static void SaveBindings() {
 }
 
 static bool g_inputBlocked = false;     // set while one of our menus is open
-static float g_kbSteer[2][2];           // smoothed keyboard steering per player (left, right)
-static DWORD g_lastPollTick[2];
-static int g_lastPadState[2] = { -1, -1 };
+static float g_kbSteer[MAX_PLAYERS][2];   // smoothed keyboard steering per player (left, right)
+static DWORD g_lastPollTick[MAX_PLAYERS];
+static int g_lastPadState[MAX_PLAYERS] = { -1, -1, -1, -1 };
 
 static void FASTCALL Dev_Poll(P2Device* self, void*) {
     int pl = self->player;
@@ -146,7 +157,7 @@ static void FASTCALL Dev_Poll(P2Device* self, void*) {
     if (dev < 0) {                                        // keyboard
         if (!GameHasFocus()) { g_kbSteer[pl][0] = g_kbSteer[pl][1] = 0; return; }
         for (int i = 0; i < NUM_BIND; i++) {
-            float v = KeyDown(g_keyBind[pl][i]) ? 1.f : 0.f;
+            float v = KeyDown(g_keyBind[g_kbSet[pl]][i]) ? 1.f : 0.f;
             if (kActions[i].steer) {            // ramp keyboard steering so it isn't twitchy
                 float& s = g_kbSteer[pl][kActions[i].channel - 2];
                 float rate = v > s ? 5.f : 8.f;

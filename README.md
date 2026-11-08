@@ -10,7 +10,7 @@ The console versions of Most Wanted had a split screen Quick Race mode. Most of 
 
 - **Split Screen** option in the Quick Race menu
 - Top/bottom (default) or side-by-side layout
-- Each player gets their own camera and HUD
+- Each player gets their own camera and HUD; every player starts on the near chase camera
 - The world loads around both players, however far apart they are
 - A separate minimap for each player; each map also shows the other player's arrow
 - A join screen before car selection: the first device to press A (or Enter) is Player 1, the second is Player 2
@@ -21,6 +21,7 @@ The console versions of Most Wanted had a split screen Quick Race mode. Most of 
 - **Player 2 can use your career and My Cars cars**, with their paint, body kits and performance parts
 - **Lap Knockout** in split screen: the last racer each lap is knocked out, like in single player, with the game's own KNOCKED OUT screen
 - The game's race over message (winner text) is shown before the results screen
+- **Cops in split screen races** (COPS option: Off / On, Heat 5): police chase both players with sirens and the same pressure on each, new cop cars come at you from ahead, roadblocks, spike strips and Rhino SUVs as backup, cop icons on the minimaps. A busted player is out, the other races on and gets all the cops
 - The red flares at the finish line show in split screen
 - Each player can use any XInput controller or the keyboard. Two players can share one keyboard.
 - Remappable controls for each player, set in-game: **pause → Options → 2P CONTROLS**. Each action has a controller and a keyboard binding, saved per player, whichever device they join with.
@@ -29,7 +30,7 @@ The console versions of Most Wanted had a split screen Quick Race mode. Most of 
 
 ## Quick install
 
-1. Download **NFSMW-SplitScreen-v2.1-release.zip** from [Releases](../../releases).
+1. Download **NFSMW-SplitScreen-v2.4-release.zip** from [Releases](../../releases).
 2. Download **Ultimate-ASI-Loader.zip** from [Ultimate ASI Loader releases](https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases).
 3. Copy `dinput8.dll` (from the ASI Loader zip), `NFSMWSplitScreen.asi` and `NFSMWSplitScreen.ini` into your game folder (next to `speed.exe`).
 4. Start the game, then go to **Quick Race → Split Screen**. On the join screen each player presses **A** on their controller (or **Enter** on the keyboard).
@@ -41,6 +42,7 @@ The console versions of Most Wanted had a split screen Quick Race mode. Most of 
 - Optional, recommended: [NFS Most Wanted Widescreen Fix](https://github.com/ThirteenAG/WidescreenFixesPack/releases/tag/nfsmw)
   - In `scripts\NFSMostWanted.WidescreenFix.ini`, set `SkipIntro = 0` (otherwise the game can crash at startup).
   - Also set `[CAMERA] Enable = 0` (otherwise the right stick turns the camera).
+- Recommended for long races with cops: give `speed.exe` 4 GB of memory instead of 2 GB (the "4GB patch": the *large address aware* flag, for example with NTCore's 4GB Patch). Two views, two pursuits and the world loading around both players can run a 2 GB game out of memory. Back up `speed.exe` first.
 
 ## Installation
 
@@ -76,10 +78,37 @@ After picking a track in **Quick Race → Split Screen**, the race options scree
 | AI Racers | 0–4 (remembered between sessions) |
 | AI Difficulty | Easy / Medium / Hard (greyed out with 0 AI) |
 | Catch Up | On / Off (greyed out with 0 AI) |
+| Cops | Off / On (Heat 5; remembered between sessions) |
+
+## Cops (pursuit)
+
+Set **Cops** to **On** on the race options screen; the cops come at Heat 5. It works in every split screen race mode, including Lap Knockout.
+
+- About 8 seconds after the start the cops go after **both players**, with sirens, at Heat 5. Cop cars blink red and blue on both minimaps.
+- **Both players get the same pressure.** Each pursuit asks for more cop cars than single player (twice Heat 5's count plus one), and when a player has fewer than 7 cops close by a new car is sent for them. Up to 13 cop cars chase at once; the game has about 18, and the rest are kept free for roadblocks, spike strips and Rhinos.
+- **New cop cars come from ahead**, 340 m up the road. Players within 400 m of each other get them ahead of whoever leads; further apart, each ahead of themselves. A car is never dropped in right in front of the player behind.
+- **Rhino SUVs** as backup: each player every 20 seconds.
+- **Roadblocks and spike strips** take turns, one on the road at a time, the next at least 25 seconds later. The game places them 250 m ahead on the race route.
+  - Players under 1 km apart: it's set up ahead of whoever leads, and it **stays until both players have passed it** (when the leader gets through, it's handed to the other player's chase).
+  - Further apart: each player in turn gets one ahead of themselves.
+  - One player out: it's for the one still racing.
+- Cop cars stranded far behind both players are taken off the road so new ones can come where the racing is.
+- A **busted meter** above each player's speedometer fills up as the cops box that player in.
+- **Busted:** the game's BUSTED banner shows, the race goes on for the other player, and 3 seconds later the busted player's view dims with a BUSTED / OUT OF THE RACE screen (over their HUD and minimap) and their car is taken off the road. Their cops go after the other player.
+- When a player is busted, the cops near the other player join their chase; the ones far behind turn their sirens off and drive away, like the lower heat's cops do in single player when the heat goes up.
+- Cop cars are only taken off the road when nobody can see them (out of sight on both screens and far from both players), never in view.
+- A player who finishes (or is knocked out) is left alone by the cops; the chase moves to whoever is still racing.
+- When both players are out (busted, finished or knocked out) the results screen opens. Busted players are ranked last and listed as BUSTED.
+- Restart puts everything back: both cars, the cops and the timers.
+- Cops only: no career heat, bounty or impound changes, and no police radio chatter in split screen.
+
+## 4 Player Split Screen
+
+Coming in a later release. The code is in the mod, but the menu entry is hidden in v2.4.
 
 ## Settings
 
-Settings are in `NFSMWSplitScreen.ini`. Each player's device and bindings, and the last AI Racers choice, are saved to `NFSMWSplitScreen_Controls.ini`.
+Settings are in `NFSMWSplitScreen.ini`. Each player's device and bindings, and the last AI Racers and Cops choices, are saved to `NFSMWSplitScreen_Controls.ini`.
 
 | Setting | Default | What it does |
 |---|---|---|
@@ -125,6 +154,9 @@ Or run `./build.sh`.
 - **Lap Knockout:** the menu entry is unlocked in split screen. A knocked-out player's car is stopped and they get the game's own KNOCKED OUT message while the other player races on.
 - **End of race:** the game only shows the race over message for player 1, then opens the results straight away. The mod posts it for whichever player finished and holds the results back for a few seconds.
 - **Finish line flares:** single player switches on world particle effects when the intro camera ends. Split screen has no intro, so the mod does that refresh when the race appears.
+- **Cops:** the race asks for cops at the chosen heat. The mod lifts the race-start cop lockout, starts a pursuit on each player, queues the backup, keeps roadblocks on the race route, and turns the game's "perp busted" path (which ends the game) into the AI racer path so the race goes on. Career heat changes are skipped because player 2 has no career profile. The game's 400 KB per-frame render memory is raised to 4 MB, since two views with a full pursuit run it dry.
+- **Cops for both players:** the game's cop spawning was built around player 1 (spawn spots are checked against player 1's camera, "behind the player" means behind player 1, new cars go to the first pursuit in the list). The mod checks each spawn against the camera of the player it's for, shares new cars between the two pursuits and sends extra cars ahead of whoever has too few.
+- **4 players (not released yet):** four render passes into the four quarters, two extra local players with their own cars, HUD packages (HUD_Player3/4, made from player 1's), world streaming zones, sound states (their sounds are placed next to listener 1/2 the way their car is placed next to their own camera), effects, camera shake and race results.
 - **Starting grid:** after the race script puts the two players in the two lanes at the start line, every racer is placed on a two-wide grid behind it and that becomes their restart position too.
 
 ## Credits

@@ -196,11 +196,16 @@ static const DWORD COL_PANEL = 0xE0101418, COL_TITLE = 0xFFFFB400, COL_TEXT = 0x
                    COL_DIM = 0xFF8A8A8A, COL_SEL = 0xFFFFB400, COL_SELBG = 0x60FFB400, COL_OK = 0xFF63D25A;
 
 // ================================================================ join screen
-// The first device that presses joins as Player 1, the next one as Player 2. Each player then
-// drives with their own saved controls, whichever controller (or the keyboard) they picked.
+// The first device that presses joins as Player 1, the next one as Player 2 (and 3, 4 in the
+// 4 player mode). Each player then drives with their own saved controls, whichever controller
+// (or the keyboard) they picked. 4 players: with 3 in, START (or ENTER) starts with an AI as player 4.
+static bool g_fourMode = false;             // the 4 player split screen entry was picked
+static int g_fourHumans = 4;                // players who joined (3 or 4) in the 4 player mode
 static bool g_joinActive = false;
-static int g_join[2] = { -2, -2 };          // -2 not joined, -1 keyboard, 0..3 controller
+static int g_join[MAX_PLAYERS] = { -2, -2, -2, -2 };   // -2 not joined, -1 keyboard, 0..3 controller
 static DWORD g_joinDoneTick = 0;
+static int JoinSlots() { return g_fourMode ? 4 : 2; }
+static int JoinCount() { int n = 0; for (int p = 0; p < JoinSlots(); p++) if (g_join[p] != -2) n++; return n; }
 
 static float* GameDeviceValues() {
     uint8_t* dev = At<uint8_t*>(G::pIOModule, 8);
@@ -208,9 +213,9 @@ static float* GameDeviceValues() {
 }
 
 static void StartJoinScreen() {
-    g_joinActive = true; g_join[0] = g_join[1] = -2; g_joinDoneTick = 0;
+    g_joinActive = true; for (auto& j : g_join) j = -2; g_joinDoneTick = 0;
     PollPads(); SyncInputState();
-    Log("Join screen opened");
+    Log("Join screen opened (%d players)", JoinSlots());
 }
 
 static void JoinScreenCancel() {
@@ -221,45 +226,66 @@ static void JoinScreenCancel() {
 }
 
 static void JoinDevice(int dev) {
-    for (int p = 0; p < 2; p++) if (g_join[p] == dev && dev >= 0) return;   // controller already in
-    for (int p = 0; p < 2; p++) if (g_join[p] == -2) { g_join[p] = dev; return; }
+    int n = JoinSlots();
+    for (int p = 0; p < n; p++) if (g_join[p] == dev && dev >= 0) return;   // controller already in
+    for (int p = 0; p < n; p++) if (g_join[p] == -2) { g_join[p] = dev; return; }
+}
+static bool IsJoined(int dev) { for (int p = 0; p < JoinSlots(); p++) if (g_join[p] == dev) return true; return false; }
+static void LeaveSlot(int p) {             // later players move up
+    int n = JoinSlots();
+    for (int i = p; i < n - 1; i++) g_join[i] = g_join[i + 1];
+    g_join[n - 1] = -2;
 }
 
 static void UpdateJoinScreen() {
     PollPads();
     bool esc = KeyPressed(VK_ESCAPE), enter = KeyPressed(VK_RETURN), tab = KeyPressed(VK_TAB);
     DWORD now = GetTickCount();
+    int n = JoinSlots(), minStart = g_fourMode ? 3 : 2;
     if (g_joinDoneTick) {
         if (now - g_joinDoneTick > 700) {
             g_joinActive = false;
-            g_dev[0] = g_join[0]; g_dev[1] = g_join[1]; cfg.p2pad = g_dev[1];
-            g_lastPadState[0] = g_lastPadState[1] = -1;
+            int joined = JoinCount();
+            for (int p = 0; p < n; p++) if (g_join[p] != -2) g_dev[p] = g_join[p];
+            // keyboard players: key sets in joining order (arrows, WASD, IJKL, numpad)
+            { int ks = 0; for (int p = 0; p < n; p++) if (g_join[p] == -1) g_kbSet[p] = ks++;
+              for (int p = 0; p < MAX_PLAYERS; p++) if (p >= n || g_join[p] != -1) {           // the rest keep a set nobody uses
+                  for (int c = 0; c < MAX_PLAYERS; c++) { bool used = false; for (int q = 0; q < MAX_PLAYERS; q++) if (q != p && (q < n && g_join[q] == -1) && g_kbSet[q] == c) used = true;
+                      if (!used) { g_kbSet[p] = c; break; } } } }
+            cfg.p2pad = g_dev[1];
+            for (auto& s : g_lastPadState) s = -1;
+            g_fourHumans = g_fourMode ? joined : 2;
             SaveBindings();
             QueueSwitch("Car_Select.fng", 0, 7);
-            Log("Players joined: P1 device %d, P2 device %d", g_join[0], g_join[1]);
+            Log("Players joined (%d): P1 device %d, P2 device %d, P3 device %d, P4 device %d", joined,
+                g_join[0], g_join[1], g_join[2], g_join[3]);
         }
         return;
     }
-    // controllers: A / START joins, B leaves
+    bool start = false;
+    // controllers: A / START joins, START again starts (4 players, 3 in), B leaves
     for (int i = 0; i < 4; i++) {
         WORD b = g_padConn[i] ? g_padNow[i].Gamepad.wButtons : 0;
         WORD pr = b & ~g_padPrev[i]; g_padPrev[i] = b;
-        if (pr & (XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_START)) JoinDevice(i);
+        if ((pr & XINPUT_GAMEPAD_START) && IsJoined(i) && JoinCount() >= minStart) start = true;
+        else if (pr & (XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_START)) JoinDevice(i);
         if (pr & XINPUT_GAMEPAD_B) {
             bool was = false;
-            for (int p = 0; p < 2; p++) if (g_join[p] == i) { g_join[p] = -2; was = true; }
-            if (was && g_join[0] == -2 && g_join[1] != -2) { g_join[0] = g_join[1]; g_join[1] = -2; }
-            if (!was && g_join[0] == -2 && g_join[1] == -2) { JoinScreenCancel(); return; }
+            for (int p = 0; p < n; p++) if (g_join[p] == i) { LeaveSlot(p); was = true; break; }
+            if (!was && JoinCount() == 0) { JoinScreenCancel(); return; }
         }
     }
-    // keyboard: ENTER joins; TAB adds a second keyboard player (shared keyboard, different keys)
-    if (enter && g_join[0] != -1 && g_join[1] != -1) JoinDevice(-1);
-    else if (tab && (g_join[0] == -1 || g_join[1] == -1)) { for (int p = 0; p < 2; p++) if (g_join[p] == -2) { g_join[p] = -1; break; } }
+    // keyboard: ENTER joins (or starts once the keyboard is in); TAB adds another keyboard player
+    // (shared keyboard, each with their own keys)
+    if (enter) {
+        if (!IsJoined(-1)) JoinDevice(-1);
+        else if (JoinCount() >= minStart) start = true;
+    } else if (tab && IsJoined(-1)) { for (int p = 0; p < n; p++) if (g_join[p] == -2) { g_join[p] = -1; break; } }
     if (esc) {
-        if (g_join[0] == -2 && g_join[1] == -2) { JoinScreenCancel(); return; }
-        g_join[0] = g_join[1] = -2;
+        if (JoinCount() == 0) { JoinScreenCancel(); return; }
+        for (auto& j : g_join) j = -2;
     }
-    if (g_join[0] != -2 && g_join[1] != -2) g_joinDoneTick = now;
+    if (JoinCount() == n || (start && g_fourMode && JoinCount() >= minStart)) g_joinDoneTick = now;
 }
 
 static void DeviceLabel(int dev, char* b, int n) {
@@ -269,32 +295,38 @@ static void DeviceLabel(int dev, char* b, int n) {
 
 static void DrawJoinScreen() {
     float S = g_uiS, W = g_uiW, H = g_uiH;
-    float pw = 1100 * S, ph = 560 * S, px = (W - pw) / 2, py = (H - ph) / 2;
+    int n = JoinSlots();
+    float slotH = n == 4 ? 112 * S : 120 * S, gap = n == 4 ? 128 * S : 150 * S;
+    float pw = 1100 * S, ph = (n == 4 ? 830 : 560) * S, px = (W - pw) / 2, py = (H - ph) / 2;
     UIRect(0, 0, W, H, 0x90000000);
     UIRect(px, py, pw, ph, COL_PANEL);
     UIRect(px, py, pw, 6 * S, COL_TITLE);
-    UIText(W / 2, py + 30 * S, 52 * S, COL_TITLE, "SPLIT SCREEN", 1);
+    UIText(W / 2, py + 30 * S, 52 * S, COL_TITLE, n == 4 ? "4 PLAYER SPLIT SCREEN" : "SPLIT SCREEN", 1);
     UIText(W / 2, py + 95 * S, 28 * S, COL_DIM, "Press A on a controller or ENTER on the keyboard to join. First to press is Player 1.", 1);
     char b[96];
-    int next = g_join[0] == -2 ? 0 : 1;
-    for (int p = 0; p < 2; p++) {
+    int next = -1;
+    for (int p = 0; p < n; p++) if (g_join[p] == -2) { next = p; break; }
+    for (int p = 0; p < n; p++) {
         int st = g_join[p];
-        float y = py + (180 + p * 150) * S;
+        float y = py + 180 * S + p * gap;
         bool waiting = st == -2 && p == next;
-        UIRect(px + 60 * S, y, pw - 120 * S, 120 * S, waiting ? 0x30FFB400 : 0x20FFFFFF);
+        UIRect(px + 60 * S, y, pw - 120 * S, slotH, waiting ? 0x30FFB400 : 0x20FFFFFF);
         snprintf(b, sizeof b, "PLAYER %d", p + 1);
-        UIText(px + 90 * S, y + 18 * S, 44 * S, waiting ? COL_SEL : COL_TEXT, b);
+        UIText(px + 90 * S, y + 14 * S, 44 * S, waiting ? COL_SEL : COL_TEXT, b);
         if (st != -2) {
             char dl[32]; DeviceLabel(st, dl, sizeof dl);
             snprintf(b, sizeof b, "READY  -  %s", dl);
-            UIText(px + 90 * S, y + 70 * S, 30 * S, COL_OK, b);
+            UIText(px + 90 * S, y + 64 * S, 30 * S, COL_OK, b);
         } else if (waiting) {
-            UIText(px + 90 * S, y + 70 * S, 28 * S, COL_TEXT,
-                   p == 1 && g_join[0] == -1 ? "Press A on a controller, or TAB to share the keyboard"
-                                             : "Press A / START on a controller, or ENTER on the keyboard");
-        } else UIText(px + 90 * S, y + 70 * S, 28 * S, COL_DIM, "Waiting...");
+            UIText(px + 90 * S, y + 64 * S, 28 * S, COL_TEXT,
+                   IsJoined(-1) ? "Press A on a controller, or TAB to share the keyboard"
+                                : "Press A / START on a controller, or ENTER on the keyboard");
+        } else UIText(px + 90 * S, y + 64 * S, 28 * S, COL_DIM, n == 4 && p == 3 ? "Waiting...  (an AI racer takes this spot if nobody joins)" : "Waiting...");
     }
-    UIText(W / 2, py + ph - 55 * S, 26 * S, COL_DIM, g_joinDoneTick ? "Get ready!" : "B = leave    ESC = back", 1);
+    const char* foot = g_joinDoneTick ? "Get ready!" :
+                       (n == 4 && JoinCount() >= 3) ? "START / ENTER = race with an AI as player 4    B = leave    ESC = back"
+                                                    : "B = leave    ESC = back";
+    UIText(W / 2, py + ph - 55 * S, 26 * S, COL_DIM, foot, 1);
 }
 
 // ================================================================ controls screen (both players)
@@ -356,7 +388,7 @@ static void UpdateControlsScreen() {
             for (int vk = 8; vk < 256; vk++) {
                 if (vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU) continue;   // use the left/right variants
                 if (KeyPressed(vk)) {
-                    if (vk != VK_ESCAPE || a == NUM_BIND - 1) g_keyBind[pl][a] = vk;     // ESC may be bound to Pause
+                    if (vk != VK_ESCAPE || a == NUM_BIND - 1) g_keyBind[g_kbSet[pl]][a] = vk;     // ESC may be bound to Pause
                     g_ctlListening = false; SyncInputState(); return;
                 }
             }
@@ -371,12 +403,12 @@ static void UpdateControlsScreen() {
     if (m.up) g_ctlRow = (g_ctlRow + CTL_ROWS - 1) % CTL_ROWS;
     if (m.down) g_ctlRow = (g_ctlRow + 1) % CTL_ROWS;
     if (m.back) { CloseControlsScreen(); return; }
-    if (g_ctlRow == 0) { if (m.left || m.right || m.accept) g_ctlPlayer ^= 1; return; }
+    if (g_ctlRow == 0) { if (m.left) g_ctlPlayer = (g_ctlPlayer + MAX_PLAYERS - 1) % MAX_PLAYERS; if (m.right || m.accept) g_ctlPlayer = (g_ctlPlayer + 1) % MAX_PLAYERS; return; }
     if (g_ctlRow >= CTL_FIRST_ACTION && g_ctlRow < CTL_FIRST_ACTION + NUM_BIND) {
         int a = g_ctlRow - CTL_FIRST_ACTION;
         if (m.left) g_ctlCol = 0;
         if (m.right) g_ctlCol = 1;
-        if (m.clear) { if (g_ctlCol == 1) g_keyBind[pl][a] = 0; else g_padBind[pl][a] = PI_NONE; }
+        if (m.clear) { if (g_ctlCol == 1) g_keyBind[g_kbSet[pl]][a] = 0; else g_padBind[pl][a] = PI_NONE; }
         else if (m.accept) { g_ctlListening = true; g_ctlArmed = false; g_ctlListenTick = GetTickCount(); }
     } else if (g_ctlRow == CTL_FIRST_ACTION + NUM_BIND && m.accept) { ResetBindings(pl); }
     else if (g_ctlRow == CTL_FIRST_ACTION + NUM_BIND + 1 && m.accept) { CloseControlsScreen(); }
@@ -414,7 +446,7 @@ static void DrawControlsScreen() {
                 const char* val;
                 bool here = sel && g_ctlCol == col;
                 if (here && g_ctlListening) val = col ? "Press a key..." : "Press a button...";
-                else if (col) val = KeyName(g_keyBind[pl][a], b, sizeof b);
+                else if (col) val = KeyName(g_keyBind[g_kbSet[pl]][a], b, sizeof b);
                 else val = kPadNames[g_padBind[pl][a]];
                 UIText(col ? c2 : c1, y + 4 * S, ts, here ? COL_SEL : COL_TEXT, val, 1);
             }
