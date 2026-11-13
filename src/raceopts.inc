@@ -636,6 +636,10 @@ static bool CopIsChopper(void* v) {
     return cls && *cls == *(uint32_t*)0x92C4F4;
 }
 static float CopOffscreen(void* v) { return ((float(THISCALL*)(void*))(*(void***)v)[0x60 / 4])(v); }
+static void* CopRoadBlock(void* v) {                   // the roadblock this cop stands in (AI +0xA4), or null
+    void* ai = ((void*(THISCALL*)(void*))(*(void***)v)[0xAC / 4])(v);
+    return ai ? ((void*(THISCALL*)(void*))(*(void***)ai)[0xA4 / 4])(ai) : nullptr;
+}
 static void* PlayerSim(int i);
 static float CopDistToPlayers(void* v) {               // to the nearest local player (busted ones too: their screen still shows the road)
     float d = 1e9f;
@@ -690,9 +694,16 @@ static bool FASTCALL Hook_StartHeavySupport(void* mgrBase, void*, void* pursuit,
     }
     return r;
 }
+// CreateRoadBlock looks 250 m ahead (push 250.0f at 0x43DE45) and gives up if that piece of road doesn't
+// suit (a junction, a bridge, too narrow): most dropped blocks failed there, not for lack of cars. In split
+// screen each try looks a bit further or nearer: 250, 300, 350, 200, 400 m.
+static float* g_rbDist = nullptr;
 static bool FASTCALL Hook_CreateRoadBlockCall(void* mgrBase, void*, uint8_t* pursuit, int size, void* veh, void* list) {
+    static const float kD[5] = { 250.f, 300.f, 350.f, 200.f, 400.f };
+    if (g_rbDist) *g_rbDist = (cfg.enabled && *G::pSimUserMode == 1 && g_copsHeat && g_rbQueuedAt) ? kD[g_rbTries % 5] : 250.f;
     bool r = ((bool(THISCALL*)(void*, void*, int, void*, void*))0x43DD30)(mgrBase, pursuit, size, veh, list);
-    if (g_rbQueuedAt) { g_rbTries++; if (r) Log("Split cops: P%d's roadblock built (try %d)", PursuitPlayer(pursuit) + 1, g_rbTries); }
+    if (g_rbDist) *g_rbDist = 250.f;
+    if (g_rbQueuedAt) { g_rbTries++; if (r) Log("Split cops: P%d's roadblock built (try %d, %.0f m ahead)", PursuitPlayer(pursuit) + 1, g_rbTries, kD[(g_rbTries - 1) % 5]); }
     return r;
 }
 // the game's own cop cars for a pursuit (UpdatePursuits -> SpawnPursuitIVehicle: ahead of the target,
@@ -828,30 +839,32 @@ static bool BlockReserve(uint8_t* mgr) {
 }
 static float CopOffscreen(void* v);
 static bool CopIsChopper(void* v);
+static void* CopRoadBlock(void* v);
 static void CopPoolStatus(uint8_t* mgr, char* out, int n) {
-    void** cops = At<void**>(mgr, 0x74); int nc = At<int>(mgr, 0x7C), act = 0, free = 0, unseen = 0;
+    void** cops = At<void**>(mgr, 0x74); int nc = At<int>(mgr, 0x7C), act = 0, free = 0, unseen = 0, rb = 0;
     for (int i = 0; cops && i < nc && i < 40; i++) {
         void* v = cops[i]; if (!v) continue;
         if (!((bool(THISCALL*)(void*))(*(void***)v)[0x88 / 4])(v)) { free++; continue; }
         act++;
+        if (CopRoadBlock(v)) rb++;
         if (!CopIsChopper(v) && CopOffscreen(v) > 3.f) unseen++;
     }
-    snprintf(out, n, "cop car pool %d: %d on the road (%d out of sight), %d free", nc, act, unseen, free);
+    snprintf(out, n, "cop car pool %d: %d on the road (%d in roadblocks, %d out of sight), %d free, %u physics objects", nc, act, rb, unseen, free, *(unsigned*)0x9377C8);
 }
-// the game has about 18 cop cars (the pool doesn't grow past its vehicle budget). The chase may use 13;
-// the other 5 stay free for roadblocks / spike strips (2-5 cars) and Rhinos.
-static const int kChaseCopCap = 13;
+// The chase may use 13 cop cars; roadblock / spike strip cars (2-5 each) and cops driving off don't
+// count, so a roadblock comes on top of the chase (up to kBlockCopCap more cars) instead of out of it.
+static const int kChaseCopCap = 13, kBlockCopCap = 10;
 static int CopsOnRoad(uint8_t* mgr) {
     void** cops = At<void**>(mgr, 0x74); int nc = At<int>(mgr, 0x7C), n = 0;
     for (int i = 0; cops && i < nc && i < 40; i++) {
         void* v = cops[i];
-        if (v && ((bool(THISCALL*)(void*))(*(void***)v)[0x88 / 4])(v) && !CopIsChopper(v)) n++;
+        if (v && ((bool(THISCALL*)(void*))(*(void***)v)[0x88 / 4])(v) && !CopIsChopper(v) && !CopRoadBlock(v) && !CopIsFleeing(v)) n++;   // chasers only
     }
     return n;
 }
 static bool ChaseFull(uint8_t* mgr) {
     if (CopsOnRoad(mgr) < kChaseCopCap) return false;
-    static DWORD t = 0; if (GetTickCount() - t > 15000) { t = GetTickCount(); Log("Split cops: %d cop cars on the road, no more chasers (the rest stay free for roadblocks and Rhinos)", kChaseCopCap); }
+    static DWORD t = 0; if (GetTickCount() - t > 15000) { t = GetTickCount(); Log("Split cops: %d cop cars chasing, no more chasers (roadblocks get their own %d)", kChaseCopCap, kBlockCopCap); }
     return true;
 }
 static int RoadBlockCount(uint8_t* mgr) {
@@ -968,7 +981,7 @@ static void FASTCALL Hook_UpdateCopPriorities(uint8_t* base, void*, int want) {
     void* unseen = nullptr; float unseenD = -1.f; void* leave = nullptr; float leaveD = -1.f; int fleeing = 0;
     for (int i = 0; cops && i < nc && i < 40; i++) {
         void* v = cops[i];
-        if (!v || !((bool(THISCALL*)(void*))(*(void***)v)[0x88 / 4])(v) || CopIsChopper(v)) continue;
+        if (!v || !((bool(THISCALL*)(void*))(*(void***)v)[0x88 / 4])(v) || CopIsChopper(v) || CopRoadBlock(v)) continue;   // roadblocks stay
         float d = CopDistToPlayers(v);
         bool fl = CopIsFleeing(v);
         if (fl) fleeing++;
@@ -980,6 +993,54 @@ static void FASTCALL Hook_UpdateCopPriorities(uint8_t* base, void*, int want) {
     else if (leave && fleeing < 4 && CopStartFlee(leave)) nLeft++;
     DWORD now = GetTickCount();
     if ((nGone || nLeft) && now - lastLog > 10000) { lastLog = now; Log("Split cops: over 8 cop cars: %d out of sight taken off the road, %d sent away (%d driving off)", nGone, nLeft, fleeing); nGone = nLeft = 0; }
+}
+// AICopManager::GetActiveCopVehicleFromOutOfView (a car for a new cop or a roadblock when no free one is
+// left: an active cop out of view 3 s and 100 m from the view, taken off the road and reused). It took
+// cops standing in roadblocks (the roadblock fell apart, or vanished before anyone got to it) and, for
+// roadblocks, chasing cops. In split screen: never a roadblock's cop, at least 120 m from both players,
+// and for a roadblock only a cop left 300 m+ behind everyone.
+static void* OutOfViewCop(uint8_t* base, uint32_t cls, bool forBlock) {
+    uint8_t* sm = base + 0x54;
+    if (!((bool(THISCALL*)(void*, int))(*(void***)sm)[1])(sm, 0)) return nullptr;    // spawning allowed
+    uint8_t* mgr = base + 0x54;
+    void** cops = At<void**>(mgr, 0x74); int nc = At<int>(mgr, 0x7C);
+    void* best = nullptr; float bestD = forBlock ? 300.f : 120.f;
+    for (int i = 0; cops && i < nc && i < 40; i++) {
+        void* v = cops[i];
+        if (!v || !((bool(THISCALL*)(void*))(*(void***)v)[0x88 / 4])(v)) continue;
+        uint32_t* c = ((uint32_t*(THISCALL*)(void*))(*(void***)v)[0x44 / 4])(v);
+        if (!c || *c != cls || CopRoadBlock(v) || !(CopOffscreen(v) > 3.f)) continue;
+        float d = CopDistToPlayers(v);
+        if (d > bestD) { bestD = d; best = v; }
+    }
+    if (best) CopUnspawn(mgr, best);
+    return best;
+}
+typedef void* (THISCALL *OutOfViewFn)(void* base, uint32_t cls);
+static bool SplitCopsOn() { return cfg.enabled && *G::pSimUserMode == 1 && g_copsHeat; }
+static void* FASTCALL Hook_OutOfViewForSpawn(uint8_t* base, void*, uint32_t cls) {
+    if (!SplitCopsOn()) return ((OutOfViewFn)0x410E70)(base, cls);
+    return OutOfViewCop(base, cls, false);
+}
+static void* FASTCALL Hook_OutOfViewForBlock(uint8_t* base, void*, uint32_t cls) {
+    if (!SplitCopsOn()) return ((OutOfViewFn)0x410E70)(base, cls);
+    return OutOfViewCop(base, cls, true);
+}
+// The cop manager's task (AICopManager::OnTask: pursuits, roadblocks, Rhinos, spawn requests, every 0.5 s)
+// once stopped being run mid-race and never came back: no more roadblocks, Rhinos or the game's own cops.
+// If its clock (+0x58 from the ICopMgr) stands still while the race runs, run it from here.
+static void CopManagerWatchdog(uint8_t* mgr, float simT) {
+    static float lastTimer = 0, lastMoved = -1, lastRun = 0; static bool stuck = false;
+    float t = At<float>(mgr, 0x58);
+    if (t != lastTimer || lastMoved < 0 || simT < lastMoved) { lastTimer = t; lastMoved = simT; if (stuck) { stuck = false; Log("Split cops: the cop manager runs again by itself"); } return; }
+    if (simT - lastMoved < 2.f) return;
+    uint8_t* base = mgr - 0x54;
+    if (!stuck) { stuck = true; lastRun = simT; Log("Split cops: the cop manager stopped running (%.1f s), running it from the mod", simT - lastMoved); }
+    if (simT - lastRun < 0.5f) return;
+    float dt = simT - lastRun; if (dt > 1.f) dt = 0.5f;
+    lastRun = simT;
+    ((bool(THISCALL*)(void*, void*, float))0x43EF00)(base + 8, At<void*>(base, 0x80), dt);   // AICopManager::OnTask
+    lastTimer = At<float>(mgr, 0x58);
 }
 static void SplitCopShare() {
     uint8_t* mgr = *(uint8_t**)0x92C67C;
@@ -1008,6 +1069,7 @@ static void SplitCopShare() {
             if (!ai) continue;
             void* cur = ((void*(THISCALL*)(void*))(*(void***)ai)[0xA0 / 4])(ai);
             if (cur) continue;                                                       // in a pursuit already
+            if (CopRoadBlock(v)) continue;                                           // standing in a roadblock: stays there
             if (!((bool(THISCALL*)(void*))(*(void***)v)[0x88 / 4])(v)) continue;      // not on the road
             // far from the player still racing (they'd only come from behind): they drive off with their
             // sirens off instead (as when the heat level goes up), so new cops are sent ahead of that player
@@ -1027,6 +1089,7 @@ static void SplitCopShare() {
     float st = ((float(*)())0x6E8DE0)();                                  // Sim::GetTime (stops when paused)
     static float lastSt = 0; static DWORD reinforceAt[2] = { 0, 0 }, lastLog = 0; static int spawned[2] = { 0, 0 };
     bool running = st != lastSt; lastSt = st;
+    if (running && !ResultsShown() && (pur[0] || pur[1])) CopManagerWatchdog(mgr, st);
     int active = At<int>(mgr, 0x94 - 0x54);
     int wantClose = 2 + g_copsHeat;                                       // heat 5: 7 cops on each player
     for (int i = 0; i < 2 && running && !ResultsShown(); i++) {
@@ -1062,6 +1125,7 @@ static void SplitCopShare() {
             uint8_t* v = (uint8_t*)cops[i];
             if (!v || !((bool(THISCALL*)(void*))(*(void***)v)[0x88 / 4])(v)) continue;          // active
             if (CopIsChopper(v)) continue;                                                       // helicopter
+            if (CopRoadBlock(v)) continue;                                                       // roadblocks go by their own rules
             // cops driving off go once out of sight for 2 s and 120 m from everyone; the rest 3 s / 300 m
             // from every player still racing
             bool fleeing = CopIsFleeing(v);
@@ -1076,6 +1140,7 @@ static void SplitCopShare() {
                 float dx = cp[0] - pp[k][0], dy = cp[1] - pp[k][1], dz = cp[2] - pp[k][2];
                 if (dx * dx + dy * dy + dz * dz < farM * farM) farAway = false;
             }
+            if (farAway && CopDistToPlayers(v) < 120.f) farAway = false;                   // a busted player still sees the road
             if (!farAway) continue;
             CopUnspawn(mgr, v);
             done++; recycled++;
@@ -1901,6 +1966,11 @@ static void InstallRaceOptions() {
     PatchCall(0x43EBD8, (void*)Hook_SpawnPursuitIVehicle, 0x430E60); // UpdatePursuits
     PatchCall(0x43EB7F, (void*)Hook_UpdateSupportCops, 0x43E770);    // UpdatePursuits
     PatchCall(0x43EC35, (void*)Hook_CreateRoadBlockCall, 0x43DD30);  // UpdatePursuits (requested roadblocks)
+    PatchCall(0x42EAF3, (void*)Hook_OutOfViewForSpawn, 0x410E70);   // SpawnPursuitCar
+    PatchCall(0x43E113, (void*)Hook_OutOfViewForBlock, 0x410E70);   // CreateRoadBlock
+    {   uint8_t* p = (uint8_t*)0x43DE45;                                // CreateRoadBlock: push 250.0f
+        if (p[0] == 0x68 && *(uint32_t*)(p + 1) == 0x437A0000) { DWORD o; VirtualProtect(p + 1, 4, PAGE_EXECUTE_READWRITE, &o); g_rbDist = (float*)(p + 1); }
+        else Log("roadblock distance patch: unexpected bytes"); }
     PatchCall(0x43E7A3, (void*)Hook_GetHeavySupportVehicles, 0x41F130);
     PatchCall(0x43E836, (void*)Hook_StartHeavySupport, 0x41F2E0);
     {   const uint8_t e[6] = { 0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0 };   // AISpawnManager::GetBasePosition -> ours

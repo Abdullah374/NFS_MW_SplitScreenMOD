@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.4.1 – Fixes for roadblocks, cops and controllers
+
+- **Controller player could only reverse** (one player on a controller, the other on the keyboard): each player's car controls went through the controller layout picked in single player Options → Controls (PlayerSettings, InputPlayer::FetchInput -> GetControllerAttribs). With a non-default layout, accelerate came from the wrong input. Split screen players now always use the default layout; the mod's own controls (2P CONTROLS) decide the buttons.
+- **Roadblocks disappearing:** cops standing in a roadblock were taken off the road by the out-of-sight clean-up, reused for new cops and roadblocks by the game (GetActiveCopVehicleFromOutOfView), or sent off after a bust, and a roadblock without cops is removed. Roadblock cops now stay.
+- **Roadblocks get their own cars:** the 13-cop limit counts only cops chasing (not roadblock cars or cops driving off), and a roadblock only borrows cops left 300 m+ behind everyone, never chasing ones.
+- **Cops vanishing:** a cop is only taken off the road when also 120 m+ from both players, a busted player included.
+- **The cop manager could stop mid-race** (no roadblocks, Rhinos or the game's own cops until a restart). The mod notices when it stands still for 2 s and keeps it running.
+- More roadblocks get placed: each try looks 250, 300, 350, 200 or 400 m ahead instead of always 250 m.
+- **Minimaps disappeared when player 1 looked back** (the game hides a player's HUD while looking back, and both minimaps come from player 1's HUD). In split screen the HUD and minimaps now stay on while looking back.
+
 ## v2.4 – Roadblocks and spike strips are back
 
 - **Roadblocks and spike strips** in split screen races with cops, taking turns with Rhinos as backup:

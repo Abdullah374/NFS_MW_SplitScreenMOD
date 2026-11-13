@@ -265,6 +265,27 @@ static void FASTCALL Hook_CreatePlayers(void* game, void*) {
     if (split) At<int8_t>(db, G::FEDB_JOYPORT0) = old0;
 }
 
+// In a race, each player's InputPlayer maps device channels to car controls with a layout picked from
+// that player's PlayerSettings (GetControllerAttribs(1): the Options -> Controls config +0x08 and
+// layout flag +0x07, 12 layouts at 0x89F6AC). The mod's devices already deliver every action on its
+// own channel, so only the default layout (index 1, as PlayerSettings::Default) fits. With another one
+// picked in the profile (e.g. a different controller config in single player), that player's
+// accelerate went to the wrong channel: the car only reversed. Split screen players always get the default.
+static unsigned FASTCALL Hook_GetControllerAttribs(void* settings, void*, int attrib, bool b) {
+    unsigned r = ((unsigned(THISCALL*)(void*, int, bool))0x56D4B0)(settings, attrib, b);
+    if (attrib != 1 || !cfg.enabled || *G::pSimUserMode != 1) return r;
+    unsigned def = *(unsigned*)(0x89F6AC + 4);
+    static void* logged[2] = {};
+    if (r != def) {
+        int k = 0; for (; k < 2 && logged[k] && logged[k] != settings; k++) {}
+        if (k < 2 && !logged[k]) {
+            logged[k] = settings;
+            uint8_t* s = (uint8_t*)settings;
+            Log("Player controls layout %08X (config %d, flag %d) from the profile -> default %08X", r, At<int>(s, 8), s[7], def);
+        }
+    }
+    return def;
+}
 typedef void (THISCALL *IOInitFn)(void* io);
 static void InstallLateHooks();
 static void FASTCALL Hook_IOModuleInit(void* io, void*) {
@@ -1290,6 +1311,27 @@ static void InstallLateHooks() {
     InstallRaceHud();
     if (cfg.p2MenuInput) { uint8_t* c = (uint8_t*)0x559627; if (c[0] == 0x83 && c[1] == 0xFD && c[2] == 0x01) { uint8_t three = 3; WriteMem(0x559629, &three, 1); } }
     if ((o = HookCall(0x62F33E, (void*)Hook_PausePush, 0x5257F0))) o_PausePush = o;
+    PatchCall(0x6A8959, (void*)Hook_GetControllerAttribs, 0x56D4B0);   // InputPlayer::FetchInput
+    {   // FEngHud::DetermineHudFeatures turns the whole HUD off while its player looks back
+        // (CameraMover::GetLookbackAngle != 0: test ax,ax / ja 0x57CD96). In split screen both minimaps
+        // are drawn from player 1's HUD, so player 1 looking back took the map away from both players.
+        // Split screen: the HUD stays while looking back.
+        uint8_t* p = (uint8_t*)0x57CAB9;
+        const uint8_t e[9] = { 0x66, 0x85, 0xC0, 0x0F, 0x87, 0xD4, 0x02, 0x00, 0x00 };
+        if (!memcmp(p, e, 9)) {
+            uint8_t* t = (uint8_t*)VirtualAlloc(nullptr, 64, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+            int k = 0;
+            t[k++] = 0x66; t[k++] = 0x85; t[k++] = 0xC0;                            // test ax, ax
+            t[k++] = 0x74; t[k++] = 0x0E;                                            // jz cont (+14)
+            t[k++] = 0x83; t[k++] = 0x3D; *(uint32_t*)(t + k) = (uint32_t)(uintptr_t)G::pSimUserMode; k += 4; t[k++] = 0x01;   // cmp [userMode], 1
+            t[k++] = 0x74; t[k++] = 0x05;                                            // je cont (+5)
+            t[k++] = 0xE9; *(int32_t*)(t + k) = (int32_t)(0x57CD96 - ((uintptr_t)t + k + 4)); k += 4;   // jmp hide
+            t[k++] = 0xE9; *(int32_t*)(t + k) = (int32_t)(0x57CAC2 - ((uintptr_t)t + k + 4)); k += 4;   // cont: jmp on
+            uint8_t j[9] = { 0xE9, 0, 0, 0, 0, 0x90, 0x90, 0x90, 0x90 };
+            *(int32_t*)(j + 1) = (int32_t)((uintptr_t)t - (0x57CAB9 + 5));
+            WriteMem(0x57CAB9, j, 9);
+        } else Log("HUD look back patch: unexpected bytes");
+    }
     if ((o = HookCall(0x6F4EDA, (void*)Hook_CreatePlayers, 0x6F2700))) o_CreatePlayers = o;
     if ((o = HookCall(0x480C16, (void*)Hook_UpdateCameraMovers, 0x47C880))) o_UpdateCameraMovers = o;
     if ((o = HookCall(0x7C2DC5, (void*)Hook_CreateMPProfile, 0x5ABA50))) o_CreateMPProfile = o;   // player 2 car stable
@@ -1380,7 +1422,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID) {
         LoadConfig();
         char lp[MAX_PATH]; snprintf(lp, sizeof lp, "%s\\NFSMWSplitScreen.log", g_dir);
         if (cfg.debug) g_log = fopen(lp, "w");
-        Log("NFSMW Split Screen v2.4 loading");
+        Log("NFSMW Split Screen v2.4.1 loading");
         if (!CheckVersion()) { Log("Unsupported speed.exe version - mod disabled (needs v1.3)"); return TRUE; }
         LoadXInput();
         LoadBindings();
